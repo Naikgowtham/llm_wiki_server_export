@@ -477,8 +477,20 @@ async def run_ingest(
 
     await _process_chunks()
 
-    # Maintain order of chunks
+    # Maintain order of chunks and compact high-token payloads for synthesis
     all_extractions = [res for idx, res in sorted(extraction_results.items())]
+    compact_extractions = []
+    for item in all_extractions:
+        if isinstance(item, dict) and len(all_extractions) > 4:
+            compact_extractions.append({
+                "summary": item.get("summary", ""),
+                "entities": item.get("entities", [])[:6],
+                "concepts": item.get("concepts", [])[:5],
+                "claims": item.get("claims", [])[:6],
+                "relationships": item.get("relationships", [])[:6],
+            })
+        else:
+            compact_extractions.append(item)
 
     # 2. Synthesis (new pages)
     synth_template = get_template("ingest_synthesize.md")
@@ -496,7 +508,7 @@ async def run_ingest(
         source_filename=source_filename,
         source_slug=source_slug,
         date=today,
-        combined_extractions=json.dumps(all_extractions, indent=2),
+        combined_extractions=json.dumps(compact_extractions, indent=2),
         existing_index=existing_index,
         page_templates=page_templates,
         max_page_words=config.ingest_settings.get("max_page_words", 800),
