@@ -63,6 +63,8 @@ class RateLimitCooldownTracker:
 class LLMProvider:
     """Manages LLM completions across multiple providers and handles automatic failover."""
 
+    _call_counter: int = 0
+
     def __init__(self, config: Optional[ProvidersConfig] = None):
         self.config = config or load_providers_config()
         self.rate_limits: List[Dict[str, Any]] = []
@@ -129,6 +131,10 @@ class LLMProvider:
     ) -> str:
         """Execute a completion using the fallback chain configured for the given operation."""
         base_models = [override_model] if override_model else self.config.get_fallback_models(operation)
+        if len(base_models) > 1 and not override_model:
+            offset = LLMProvider._call_counter % len(base_models)
+            LLMProvider._call_counter += 1
+            base_models = base_models[offset:] + base_models[:offset]
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)  # Circular rotation (max 2 loops)
 
         try:
@@ -167,15 +173,16 @@ class LLMProvider:
                     clean_model = model_id.replace("nous/", "")
                 elif p_data and "nous" in p_data.get("api_base", ""):
                     clean_model = f"openai/{model_id}" if not model_id.startswith("openai/") else model_id
-                elif p_data and "cloudflare" in p_data.get("api_base", ""):
-                    clean_model = f"cloudflare/{model_id}" if not model_id.startswith("cloudflare/") else model_id
+                elif model_id.startswith("cloud flare") or (p_data and "cloudflare" in p_data.get("api_base", "")):
+                    raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
+                    clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
                 kwargs: Dict[str, Any] = {
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
                     "max_tokens": 8192,
-                    "timeout": 30,  # Rapid failover on dead/throttled endpoints
+                    "timeout": 60 if "cloudflare" in clean_model else 30,  # Rapid failover on dead/throttled endpoints
                 }
 
                 if "local/" in model_id or (p_data and "localhost" in str(p_data.get("api_base", ""))):
@@ -187,6 +194,8 @@ class LLMProvider:
                     if k and k not in PLACEHOLDER_PREFIXES:
                         kwargs["api_key"] = k
                     if b:
+                        if "/ai/run" in b:
+                            b = b.replace("/ai/run", "/ai/v1")
                         kwargs["api_base"] = b
 
                 for attempt in range(2):  # Only retry once before moving to next fallback
@@ -314,6 +323,10 @@ class LLMProvider:
         """Execute an asynchronous completion using the fallback chain configured for the given operation."""
         import asyncio
         base_models = [override_model] if override_model else self.config.get_fallback_models(operation)
+        if len(base_models) > 1 and not override_model:
+            offset = LLMProvider._call_counter % len(base_models)
+            LLMProvider._call_counter += 1
+            base_models = base_models[offset:] + base_models[:offset]
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)
 
         try:
@@ -348,15 +361,16 @@ class LLMProvider:
                     clean_model = model_id.replace("nous/", "")
                 elif p_data and "nous" in p_data.get("api_base", ""):
                     clean_model = f"openai/{model_id}" if not model_id.startswith("openai/") else model_id
-                elif p_data and "cloudflare" in p_data.get("api_base", ""):
-                    clean_model = f"cloudflare/{model_id}" if not model_id.startswith("cloudflare/") else model_id
+                elif model_id.startswith("cloud flare") or (p_data and "cloudflare" in p_data.get("api_base", "")):
+                    raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
+                    clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
                 kwargs = {
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
                     "max_tokens": 8192,
-                    "timeout": 30,
+                    "timeout": 60 if "cloudflare" in clean_model else 30,
                 }
 
                 if "local/" in model_id or (p_data and "localhost" in str(p_data.get("api_base", ""))):
@@ -368,6 +382,8 @@ class LLMProvider:
                     if k and k not in PLACEHOLDER_PREFIXES:
                         kwargs["api_key"] = k
                     if b:
+                        if "/ai/run" in b:
+                            b = b.replace("/ai/run", "/ai/v1")
                         kwargs["api_base"] = b
 
                 for attempt in range(2):

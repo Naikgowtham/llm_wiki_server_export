@@ -61,6 +61,20 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
     if not sections and text.strip():
         sections.append((text.strip(), []))
 
+    def _append_safely(txt: str, hdrs: List[str]):
+        clean = txt.strip()
+        if not clean:
+            return
+        if count_tokens_approx(clean) <= max_tokens:
+            refined_sections.append((clean, hdrs))
+        else:
+            # Subdivide oversized block with sliding window
+            overlap = min(100, max_tokens // 10)
+            sub_chunks = _split_fixed_size(clean, max_tokens, overlap)
+            for sub_txt, _ in sub_chunks:
+                if sub_txt.strip():
+                    refined_sections.append((sub_txt.strip(), hdrs))
+
     # Second pass: bundle tiny sections together up to max_tokens, or split oversized ones
     refined_sections: List[tuple[str, List[str]]] = []
     buffer_text = ""
@@ -72,7 +86,7 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
         # If a single section is larger than max_tokens, split by page breaks or paragraphs
         if sec_tokens > max_tokens:
             if buffer_text:
-                refined_sections.append((buffer_text.strip(), buffer_headers))
+                _append_safely(buffer_text, buffer_headers)
                 buffer_text = ""
                 buffer_headers = []
 
@@ -83,12 +97,12 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
                 for p in page_parts:
                     p_cand = (p_buf + "\n\n-----\n\n" + p).strip() if p_buf else p
                     if count_tokens_approx(p_cand) > max_tokens and p_buf:
-                        refined_sections.append((p_buf.strip(), headers))
+                        _append_safely(p_buf, headers)
                         p_buf = p
                     else:
                         p_buf = p_cand
                 if p_buf.strip():
-                    refined_sections.append((p_buf.strip(), headers))
+                    _append_safely(p_buf, headers)
                 continue
 
             paragraphs = sec_text.split("\n\n")
@@ -96,12 +110,12 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
             for p in paragraphs:
                 p_with_sep = (p_buf + "\n\n" + p).strip() if p_buf else p
                 if count_tokens_approx(p_with_sep) > max_tokens and p_buf:
-                    refined_sections.append((p_buf.strip(), headers))
+                    _append_safely(p_buf, headers)
                     p_buf = p
                 else:
                     p_buf = p_with_sep
             if p_buf.strip():
-                refined_sections.append((p_buf.strip(), headers))
+                _append_safely(p_buf, headers)
             continue
 
         candidate = (buffer_text + "\n\n" + sec_text).strip() if buffer_text else sec_text
@@ -111,12 +125,12 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
                 buffer_headers = headers
         else:
             if buffer_text:
-                refined_sections.append((buffer_text.strip(), buffer_headers))
+                _append_safely(buffer_text, buffer_headers)
             buffer_text = sec_text
             buffer_headers = headers
 
     if buffer_text.strip():
-        refined_sections.append((buffer_text.strip(), buffer_headers))
+        _append_safely(buffer_text, buffer_headers)
 
     return refined_sections
 

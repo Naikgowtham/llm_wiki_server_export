@@ -426,8 +426,8 @@ async def run_ingest(
     chunks = split_document(
         content_to_process,
         strategy=config.ingest_settings.get("chunk_strategy", "headers"),
-        max_tokens=config.ingest_settings.get("chunk_max_tokens", 6000),
-        overlap_tokens=config.ingest_settings.get("overlap_tokens", 500),
+        max_tokens=config.ingest_settings.get("chunk_max_tokens", 2000),
+        overlap_tokens=config.ingest_settings.get("overlap_tokens", 200),
         provider=provider,
     )
 
@@ -436,13 +436,12 @@ async def run_ingest(
         return []
 
     # 1. Chunked extraction
-    # 1. Chunked extraction
     import asyncio
     extract_template = get_template("ingest_extract.md")
     extraction_results = {}
 
     async def _process_chunks():
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(2)
         total_chunks = len(chunks)
         completed = 0
 
@@ -469,7 +468,10 @@ async def run_ingest(
                 completed += 1
                 emit_progress(f"Ingesting {source_filename}: Extracted chunk {completed}/{total_chunks}", int(completed / total_chunks * 33))
 
-        tasks = [extract_chunk(chunk) for chunk in chunks]
+        tasks = []
+        for chunk in chunks:
+            tasks.append(asyncio.create_task(extract_chunk(chunk)))
+            await asyncio.sleep(0.3)
         await asyncio.gather(*tasks)
 
     await _process_chunks()
