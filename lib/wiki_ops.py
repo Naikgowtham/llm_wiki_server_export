@@ -457,6 +457,7 @@ async def run_ingest(
             )
             async with semaphore:
                 resp = await provider.acall([{"role": "user", "content": prompt_str}], operation="ingest_extract")
+                await asyncio.sleep(1.5)
                 cleaned = _clean_json_response(resp)
                 try:
                     parsed = json.loads(cleaned)

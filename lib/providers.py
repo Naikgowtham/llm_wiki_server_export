@@ -170,7 +170,7 @@ class LLMProvider:
                 elif model_id.startswith("groq "):
                     clean_model = "groq/" + model_id.split("/", 1)[1]
                 elif model_id.startswith("nous/"):
-                    clean_model = model_id.replace("nous/", "")
+                    clean_model = "openai/" + model_id.replace("nous/", "")
                 elif p_data and "nous" in p_data.get("api_base", ""):
                     clean_model = f"openai/{model_id}" if not model_id.startswith("openai/") else model_id
                 elif model_id.startswith("cloud flare") or (p_data and "cloudflare" in p_data.get("api_base", "")):
@@ -358,7 +358,7 @@ class LLMProvider:
                 elif model_id.startswith("groq "):
                     clean_model = "groq/" + model_id.split("/", 1)[1]
                 elif model_id.startswith("nous/"):
-                    clean_model = model_id.replace("nous/", "")
+                    clean_model = "openai/" + model_id.replace("nous/", "")
                 elif p_data and "nous" in p_data.get("api_base", ""):
                     clean_model = f"openai/{model_id}" if not model_id.startswith("openai/") else model_id
                 elif model_id.startswith("cloud flare") or (p_data and "cloudflare" in p_data.get("api_base", "")):
