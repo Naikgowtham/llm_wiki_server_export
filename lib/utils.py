@@ -169,11 +169,19 @@ def resolve_vault_path(wiki_arg: Optional[str] = None, query: Optional[str] = No
         if (p / "wiki").is_dir():
             return p
 
-        # Check ~/wikis/<wiki_arg> and ./wikis/<wiki_arg>
+        # Check ~/wikis and ./wikis for exact, suffix (-wiki), or prefix match
         for base in [Path.home() / "wikis", Path.cwd() / "wikis"]:
-            cand = base / wiki_arg
-            if (cand / "wiki").is_dir():
-                return cand.resolve()
+            if not base.is_dir():
+                continue
+            for cand in [base / wiki_arg, base / f"{wiki_arg}-wiki"]:
+                if (cand / "wiki").is_dir():
+                    return cand.resolve()
+            for entry in base.iterdir():
+                if entry.is_dir() and (entry / "wiki").is_dir():
+                    clean_name = entry.name.lower().replace("-wiki", "").replace("_wiki", "")
+                    arg_clean = wiki_arg.lower().replace("-wiki", "").replace("_wiki", "")
+                    if arg_clean in (entry.name.lower(), clean_name):
+                        return entry.resolve()
         return None
 
     # wiki_arg is None or '.'
