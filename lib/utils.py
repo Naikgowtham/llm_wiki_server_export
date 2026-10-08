@@ -106,6 +106,8 @@ def build_link_graph(wiki_dir: Path) -> Dict[str, Set[str]]:
         return graph
 
     for md_file in wiki_dir.rglob("*.md"):
+        if ".llm-wiki" in md_file.parts:
+            continue
         try:
             content = md_file.read_text(encoding="utf-8")
             links = extract_wikilinks(content)

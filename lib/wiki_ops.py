@@ -871,6 +871,8 @@ async def run_lint(
 
     page_titles: Dict[str, str] = {}
     for md in (wiki_dir / "wiki").rglob("*.md"):
+        if ".llm-wiki" in md.parts:
+            continue
         all_pages.add(md.stem)
         try:
             fm, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
@@ -883,6 +885,8 @@ async def run_lint(
     dangling_sources: List[str] = []
     frontmatter_issues: List[str] = []
     for md in (wiki_dir / "wiki").rglob("*.md"):
+        if ".llm-wiki" in md.parts:
+            continue
         if md.name in ("index.md", "log.md", "overview.md") or md.name.endswith("_MOC.md"):
             continue
         if staged_md_files is not None and md.resolve() not in staged_md_files:
@@ -994,7 +998,7 @@ async def run_lint(
         store = WikiVectorStore(wiki_dir, provider)
         
         for md in (wiki_dir / "wiki").rglob("*.md"):
-            if md.name in ("log.md",) or md.name.endswith("_MOC.md"):
+            if ".llm-wiki" in md.parts or md.name in ("index.md", "log.md", "overview.md") or md.name.endswith("_MOC.md"):
                 continue
             if staged_md_files is not None and md.resolve() not in staged_md_files:
                 continue
@@ -1090,7 +1094,7 @@ async def run_lint(
         state_lock = Lock()
         
         async def _process_lint_pages():
-            semaphore = asyncio.Semaphore(5)
+            semaphore = asyncio.Semaphore(2)
             total_pages = len(pages_summary)
             completed = 0
             
