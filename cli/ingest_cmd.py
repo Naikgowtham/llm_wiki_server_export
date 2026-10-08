@@ -16,13 +16,15 @@ console = Console()
 
 
 @click.command("ingest")
-@click.argument("source_path", required=False, type=click.Path(exists=True))
-@click.option("--wiki-path", "-w", default=".", type=click.Path(exists=True, file_okay=False), help="Path to wiki vault.")
+@click.argument("source_path", required=False, type=str)
+@click.option("--wiki-path", "-w", default=".", type=str, help="Path or name of wiki vault.")
 @click.option("--all", "ingest_all", is_flag=True, help="Ingest all uncompiled files from the raw/ folder.")
 @click.option("--yes", "-y", is_flag=True, help="Auto-approve all proposed file operations (non-interactive).")
 def ingest_cmd(source_path: Optional[str], wiki_path: str, ingest_all: bool, yes: bool):
     """Ingest raw sources (articles, papers, notes) into compiled wiki pages."""
-    wiki_dir = Path(wiki_path).resolve()
+    from lib.utils import resolve_vault_path
+    resolved = resolve_vault_path(wiki_path)
+    wiki_dir = resolved if resolved else Path(wiki_path).resolve()
     raw_dir = wiki_dir / "raw"
 
     if not (wiki_dir / "wiki").is_dir() or not (wiki_dir / "AGENTS.md").is_file():
@@ -48,7 +50,21 @@ def ingest_cmd(source_path: Optional[str], wiki_path: str, ingest_all: bool, yes
             console.print("[yellow]No uncompiled raw source documents found in raw/[/yellow]")
             return
     elif source_path:
-        sources_to_process.append(Path(source_path).resolve())
+        p = Path(source_path)
+        if not p.is_absolute():
+            # Check relative to cwd, then relative to wiki_dir
+            if p.exists():
+                sources_to_process.append(p.resolve())
+            elif (wiki_dir / p).exists():
+                sources_to_process.append((wiki_dir / p).resolve())
+            else:
+                console.print(f"[red]Error:[/red] Source file not found: {source_path}")
+                return
+        else:
+            if not p.exists():
+                console.print(f"[red]Error:[/red] Source file not found: {source_path}")
+                return
+            sources_to_process.append(p.resolve())
     else:
         console.print("[red]Error:[/red] Please specify a source file to ingest or use --all.")
         return
