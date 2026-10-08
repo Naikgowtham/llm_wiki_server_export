@@ -79,9 +79,17 @@ def init_cmd(target_path: str, domain: str, description: str, slug: Optional[str
     try:
         import git
         repo = git.Repo.init(dest)
+        with repo.config_writer() as cw:
+            cw.set_value("user", "name", "Gowtham")
+            cw.set_value("user", "email", "gowtham@localhost")
         repo.git.add(A=True)
         repo.index.commit(f"init: bootstrap {domain} LLM wiki")
         git_status = "[green]Initialized with initial commit[/green]"
+
+        # Install Git CI/CD hooks
+        from cli.hooks_cmd import install_hooks_cmd
+        from click.testing import CliRunner
+        CliRunner().invoke(install_hooks_cmd, ["-w", str(dest), "--force"])
     except Exception as e:
         git_status = f"[yellow]Git not initialized ({e})[/yellow]"
 
