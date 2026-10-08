@@ -177,12 +177,13 @@ class LLMProvider:
                     raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
                     clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
+                op_timeout = 180 if operation in ("ingest_synth", "lint_fix") else (60 if "cloudflare" in clean_model else 30)
                 kwargs: Dict[str, Any] = {
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
                     "max_tokens": 8192,
-                    "timeout": 60 if "cloudflare" in clean_model else 30,  # Rapid failover on dead/throttled endpoints
+                    "timeout": op_timeout,
                 }
 
                 if "local/" in model_id or (p_data and "localhost" in str(p_data.get("api_base", ""))):
@@ -365,12 +366,13 @@ class LLMProvider:
                     raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
                     clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
+                op_timeout = 180 if operation in ("ingest_synth", "lint_fix") else (60 if "cloudflare" in clean_model else 30)
                 kwargs = {
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
                     "max_tokens": 8192,
-                    "timeout": 60 if "cloudflare" in clean_model else 30,
+                    "timeout": op_timeout,
                 }
 
                 if "local/" in model_id or (p_data and "localhost" in str(p_data.get("api_base", ""))):
