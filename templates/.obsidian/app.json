@@ -1,0 +1,10 @@
+{
+  "attachmentFolderPath": "raw/assets",
+  "newFileLocation": "folder",
+  "newFileFolderPath": "wiki",
+  "showLineNumber": true,
+  "strictLineBreaks": true,
+  "useMarkdownLinks": false,
+  "showFrontmatter": true,
+  "readableLineLength": true
+}

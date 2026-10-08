@@ -1,0 +1,59 @@
+# Wiki Instance Configuration
+# Created by `wiki init`, customize per domain.
+
+domain:
+  name: "{{DOMAIN_NAME}}"
+  slug: "{{DOMAIN_SLUG}}"
+  description: "{{DOMAIN_DESCRIPTION}}"
+
+# Page type configuration
+page_types:
+  - source
+  - concept
+  - entity
+  - topic
+  - comparison
+  - query
+
+# Required YAML frontmatter fields on every wiki page
+required_frontmatter:
+  - title
+  - type
+  - tags
+  - sources
+  - created
+  - updated
+  - confidence
+
+# Confidence thresholds
+confidence:
+  high: 3        # Minimum corroborating sources for "high"
+  medium: 1      # Minimum sources for "medium"
+  # Below medium count = "low"
+  # Active disagreement = "contested"
+
+# Ingest settings
+ingest:
+  chunk_strategy: "headers"     # headers | fixed_size | pages
+  chunk_max_tokens: 6000        # Max tokens per chunk
+  overlap_tokens: 500           # Overlap between chunks (for fixed_size)
+  auto_commit: true             # Git commit after approved ingest
+  max_page_words: 800           # Split pages exceeding this word count
+
+# Lint settings
+lint:
+  stale_days: 30               # Flag pages not updated in N days
+  min_citations_per_page: 1    # Minimum source citations per page
+  max_orphan_tolerance: 5      # Alert if more than N orphan pages
+
+# Obsidian settings
+obsidian:
+  attachment_folder: "raw/assets"
+  template_folder: "page-templates"
+  graph_colors:
+    sources: "#3b82f6"         # blue
+    concepts: "#22c55e"        # green
+    entities: "#a855f7"        # purple
+    topics: "#f97316"          # orange
+    comparisons: "#ec4899"     # pink
+    queries: "#6b7280"         # gray

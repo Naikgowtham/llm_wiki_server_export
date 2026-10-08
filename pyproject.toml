@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-wiki"
+version = "0.1.0"
+description = "Reusable toolkit for building LLM-maintained knowledge wikis on Obsidian"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "ghost"}
+]
+
+dependencies = [
+    "litellm>=1.40.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "gitpython>=3.1.0",
+    "tiktoken>=0.7.0",
+    "Jinja2>=3.1.0",
+    "python-frontmatter>=1.1.0",
+    "PyYAML>=6.0",
+    "chromadb>=0.4.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pymupdf4llm>=0.0.17",
+    "mcp>=1.2.0",
+    "json-repair>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+wiki = "cli.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["lib*", "cli*", "prompts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

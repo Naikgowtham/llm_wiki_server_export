@@ -1,0 +1,42 @@
+# LLM Wiki — Provider Configuration
+# Copy this file to providers.yaml and fill in your API keys.
+# providers.yaml is gitignored — NEVER commit API keys.
+
+providers:
+  anthropic:
+    api_key: "sk-ant-..."
+    models:
+      - claude-sonnet-4-20250514         # primary
+      - claude-haiku-35-20250620         # fast/cheap fallback
+
+  openai:
+    api_key: "sk-..."
+    models:
+      - gpt-4o                           # primary
+      - gpt-4o-mini                      # fast/cheap fallback
+
+  google:
+    api_key: "AIza..."
+    models:
+      - gemini/gemini-2.5-pro
+      - gemini/gemini-2.5-flash
+
+  local:
+    api_base: "http://localhost:11434"   # Ollama
+    models:
+      - ollama/qwen3:32b
+      - ollama/llama3.3:latest
+
+# Fallback chain: try providers in this order.
+# If the first fails (rate limit, network error), fall to next.
+# Format: "provider/model" matching keys above.
+fallback_chain:
+  ingest:   ["anthropic/claude-sonnet-4-20250514", "google/gemini/gemini-2.5-pro", "local/ollama/qwen3:32b"]
+  query:    ["anthropic/claude-sonnet-4-20250514", "google/gemini/gemini-2.5-flash", "local/ollama/qwen3:32b"]
+  lint:     ["google/gemini/gemini-2.5-flash", "anthropic/claude-haiku-35-20250620", "local/ollama/qwen3:32b"]
+
+# Token limits per operation
+token_limits:
+  ingest_chunk: 8000        # Max tokens per source chunk sent to LLM
+  query_context: 16000      # Max wiki context tokens for a query
+  lint_batch: 32000          # Max tokens for lint scan

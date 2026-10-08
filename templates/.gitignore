@@ -1,0 +1,18 @@
+# Obsidian workspace (user-specific, don't share)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+
+# API Keys
+providers.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python cache (if scripts run inside vault)
+__pycache__/
+*.py[cod]
+
+# LLM Wiki vector and hash caches
+.llm-wiki/
+wiki/.llm-wiki/
