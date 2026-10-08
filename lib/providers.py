@@ -177,7 +177,12 @@ class LLMProvider:
                     raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
                     clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
-                op_timeout = 180 if operation in ("ingest_synth", "lint_fix") else (60 if "cloudflare" in clean_model else 30)
+                if operation in ("ingest_synth", "lint_fix") or "nous" in clean_model or "nous" in model_id:
+                    op_timeout = 180
+                elif "cloudflare" in clean_model:
+                    op_timeout = 60
+                else:
+                    op_timeout = 45
                 kwargs: Dict[str, Any] = {
                     "model": clean_model,
                     "messages": messages,
@@ -366,7 +371,12 @@ class LLMProvider:
                     raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
                     clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
-                op_timeout = 180 if operation in ("ingest_synth", "lint_fix") else (60 if "cloudflare" in clean_model else 30)
+                if operation in ("ingest_synth", "lint_fix") or "nous" in clean_model or "nous" in model_id:
+                    op_timeout = 180
+                elif "cloudflare" in clean_model:
+                    op_timeout = 60
+                else:
+                    op_timeout = 45
                 kwargs = {
                     "model": clean_model,
                     "messages": messages,
