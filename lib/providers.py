@@ -230,14 +230,16 @@ class LLMProvider:
                 )
 
                 if is_rate_limit:
-                    RateLimitCooldownTracker.mark_cooling_down(model_id, cooldown_seconds=60.0)
+                    is_daily = "daily" in err_str or "free allocation" in err_str or "exceeded your current quota" in err_str
+                    cooldown = 3600.0 if is_daily else 60.0
+                    RateLimitCooldownTracker.mark_cooling_down(model_id, cooldown_seconds=cooldown)
                     self.rate_limits.append({
                         "model": model_id,
                         "operation": operation,
                         "error": str(e),
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                     })
-                    logger.warning("Rate limit hit on model %s: %s (cooling down for 60s)", model_id, e)
+                    logger.warning("Rate limit hit on model %s: %s (cooling down for %ds)", model_id, e, int(cooldown))
 
                 logger.warning("Model %s failed: %s. Trying next model...", model_id, e)
                 last_error = e
@@ -430,14 +432,16 @@ class LLMProvider:
                     or "temporarily unavailable" in err_str
                 )
                 if is_rate_limit:
-                    RateLimitCooldownTracker.mark_cooling_down(model_id, cooldown_seconds=60.0)
+                    is_daily = "daily" in err_str or "free allocation" in err_str or "exceeded your current quota" in err_str
+                    cooldown = 3600.0 if is_daily else 60.0
+                    RateLimitCooldownTracker.mark_cooling_down(model_id, cooldown_seconds=cooldown)
                     self.rate_limits.append({
                         "model": model_id,
                         "operation": operation,
                         "error": str(e),
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                     })
-                    logger.warning("Rate limit hit on async model %s: %s (cooling down for 60s)", model_id, e)
+                    logger.warning("Rate limit hit on async model %s: %s (cooling down for %ds)", model_id, e, int(cooldown))
 
                 logger.warning("Model %s failed: %s. Trying next model...", model_id, e)
                 last_error = e
