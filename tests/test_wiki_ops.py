@@ -188,12 +188,12 @@ def test_ingest_concurrency_ordering(wiki_dir: Path, monkeypatch):
     provider = TimingMockProvider()
     
     raw_file = (wiki_dir / "raw" / "source.md")
-    raw_file.write_text("# H1\nText 1.\n# H2\nText 2.\n# H3\nText 3.\n# H4\nText 4.\n")
+    raw_file.write_text("# H1\n" + "word " * 15 + "\n# H2\n" + "word " * 15 + "\n# H3\n" + "word " * 15 + "\n# H4\n" + "word " * 15 + "\n")
     
     from lib.config import WikiConfig
     monkeypatch.setattr("lib.wiki_ops.load_wiki_config", lambda d: WikiConfig(
         domain_name="test",
-        ingest_settings={"chunk_strategy": "headers", "chunk_max_tokens": 10}
+        ingest_settings={"chunk_strategy": "headers", "chunk_max_tokens": 25}
     ))
     
     import asyncio

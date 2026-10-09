@@ -86,6 +86,8 @@ def count_tokens_approx(text: str) -> int:
 
     Uses tiktoken if available, otherwise falls back to ~4 characters per token.
     """
+    if not text:
+        return 0
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
