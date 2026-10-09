@@ -22,8 +22,6 @@ env/
 wiki/.llm-wiki/
 
 # API Keys - NEVER commit
-providers.yaml
-config/providers.yaml
 !config/providers.example.yaml
 
 # IDE

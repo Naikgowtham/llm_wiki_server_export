@@ -2,7 +2,7 @@ import yaml
 import litellm
 
 def main():
-    with open('/home/ghost/.config/llm-wiki/providers.yaml', 'r') as f:
+    with open('config/providers.yaml', 'r') as f:
         config = yaml.safe_load(f)
     
     litellm.suppress_debug_info = True

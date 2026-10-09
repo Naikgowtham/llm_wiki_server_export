@@ -1,0 +1,238 @@
+providers:
+  anthropic:
+    api_key: sk-ant-MASKED_KEY
+    models:
+    - claude-sonnet-4-20250514
+    - claude-haiku-35-20250620
+  openai:
+    api_key: sk-openai-MASKED_KEY
+    models:
+    - gpt-4o
+    - gpt-4o-mini
+  google-2:
+    api_key: AQ.MASKED_GOOGLE_KEY
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+  local:
+    api_base: http://localhost:11434
+    models:
+    - ollama/nomic-embed-text
+  nous:
+    models:
+    - nous/poolside/laguna-s-2.1:free
+    api_base: https://inference-api.nousresearch.com/v1
+    api_key: sk-nous-MASKED_KEY
+  google 3:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AIzaSy_MASKED_GOOGLE_KEY
+  google 4:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AQ.MASKED_GOOGLE_KEY
+  google 5:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AIzaSy_MASKED_GOOGLE_KEY
+  google 6:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AIzaSy_MASKED_GOOGLE_KEY
+  google 7:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AIzaSy_MASKED_GOOGLE_KEY
+  google 8:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AQ.MASKED_GOOGLE_KEY
+  google 9:
+    models:
+    - gemini/gemini-3.8-flash
+    - gemini/gemini-3.8-flash
+    api_key: AQ.MASKED_GOOGLE_KEY
+  groq:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_base: https://api.groq.com/openai/v1
+    api_key: gsk_MASKED_GROQ_KEY
+  cloud flare:
+    models:
+    - '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b'
+    - '@cf/qwen/qwq-32b'
+    - '@cf/meta/llama-4-scout-17b-16e-instruct'
+    api_base: https://api.cloudflare.com/client/v4/accounts/<CLOUDFLARE_ACCOUNT_ID>/ai/run/
+    api_key: cfut_MASKED_CLOUDFLARE_KEY
+  groq 2:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_key: gsk_MASKED_GROQ_KEY
+    api_base: https://api.groq.com/openai/v1
+  cloud flare 2:
+    models:
+    - '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b'
+    - '@cf/qwen/qwq-32b'
+    api_base: https://api.cloudflare.com/client/v4/accounts/<CLOUDFLARE_ACCOUNT_ID>/ai/v1/
+    api_key: cfut_MASKED_CLOUDFLARE_KEY
+  groq 3:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_key: gsk_MASKED_GROQ_KEY
+    api_base: https://api.groq.com/openai/v1
+  groq 4:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_key: gsk_MASKED_GROQ_KEY
+    api_base: https://api.groq.com/openai/v1
+  groq 5:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_key: gsk_MASKED_GROQ_KEY
+    api_base: https://api.groq.com/openai/v1
+  groq 6:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_key: gsk_MASKED_GROQ_KEY
+    api_base: https://api.groq.com/openai/v1
+  groq 7:
+    models:
+    - groq/openai/gpt-oss-20b
+    - groq/openai/gpt-oss-120b
+    - groq/qwen/qwen3.8-27b
+    api_key: gsk_MASKED_GROQ_KEY
+    api_base: https://api.groq.com/openai/v1
+fallback_chain:
+  ingest_extract:
+  - groq 2/openai/gpt-oss-20b
+  - groq 3/openai/gpt-oss-20b
+  - groq 4/openai/gpt-oss-20b
+  - groq 5/openai/gpt-oss-20b
+  - groq 6/openai/gpt-oss-20b
+  - groq 7/openai/gpt-oss-20b
+  - nous/poolside/laguna-s-2.1:free
+  - cloud flare 2/@cf/qwen/qwq-32b
+  - cloud flare 2/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+  - google-2/gemini-3.8-flash
+  - google 3/gemini-3.8-flash
+  - google 4/gemini-3.8-flash
+  - google 5/gemini-3.8-flash
+  - google 6/gemini-3.8-flash
+  - google 7/gemini-3.8-flash
+  - google 8/gemini-3.8-flash
+  - google 9/gemini-3.8-flash
+  ingest_synth:
+  - groq 2/openai/gpt-oss-120b
+  - groq 3/openai/gpt-oss-120b
+  - groq 4/openai/gpt-oss-120b
+  - groq 5/openai/gpt-oss-120b
+  - groq 6/openai/gpt-oss-120b
+  - groq 7/openai/gpt-oss-120b
+  - nous/poolside/laguna-s-2.1:free
+  - cloud flare 2/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+  - cloud flare 2/@cf/qwen/qwq-32b
+  - google-2/gemini-3.8-flash
+  - google 3/gemini-3.8-flash
+  - google 4/gemini-3.8-flash
+  - google 5/gemini-3.8-flash
+  - google 6/gemini-3.8-flash
+  - google 7/gemini-3.8-flash
+  - google 8/gemini-3.8-flash
+  - google 9/gemini-3.8-flash
+  ingest_crossref:
+  - groq 2/qwen/qwen3.8-27b
+  - groq 3/qwen/qwen3.8-27b
+  - groq 4/qwen/qwen3.8-27b
+  - groq 5/qwen/qwen3.8-27b
+  - groq 6/qwen/qwen3.8-27b
+  - groq 7/qwen/qwen3.8-27b
+  - cloud flare 2/@cf/qwen/qwq-32b
+  - nous/poolside/laguna-s-2.1:free
+  query_answer:
+  - groq 2/openai/gpt-oss-20b
+  - groq 3/openai/gpt-oss-20b
+  - groq 4/openai/gpt-oss-20b
+  - groq 5/openai/gpt-oss-20b
+  - groq 6/openai/gpt-oss-20b
+  - groq 7/openai/gpt-oss-20b
+  - cloud flare 2/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+  - google-2/gemini-3.8-flash
+  - google 3/gemini-3.8-flash
+  - google 4/gemini-3.8-flash
+  - google 5/gemini-3.8-flash
+  - google 6/gemini-3.8-flash
+  - google 7/gemini-3.8-flash
+  - google 8/gemini-3.8-flash
+  - google 9/gemini-3.8-flash
+  query_fileback:
+  - groq 2/openai/gpt-oss-20b
+  - groq 3/openai/gpt-oss-20b
+  - groq 4/openai/gpt-oss-20b
+  - groq 5/openai/gpt-oss-20b
+  - groq 6/openai/gpt-oss-20b
+  - groq 7/openai/gpt-oss-20b
+  - cloud flare 2/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+  - google-2/gemini-3.8-flash
+  - google 3/gemini-3.8-flash
+  - google 4/gemini-3.8-flash
+  - google 5/gemini-3.8-flash
+  - google 6/gemini-3.8-flash
+  - google 7/gemini-3.8-flash
+  - google 8/gemini-3.8-flash
+  - google 9/gemini-3.8-flash
+  lint_audit:
+  - groq 2/qwen/qwen3.8-27b
+  - groq 3/qwen/qwen3.8-27b
+  - groq 4/qwen/qwen3.8-27b
+  - groq 5/qwen/qwen3.8-27b
+  - groq 6/qwen/qwen3.8-27b
+  - groq 7/qwen/qwen3.8-27b
+  - cloud flare 2/@cf/qwen/qwq-32b
+  - google-2/gemini-3.8-flash
+  - google 3/gemini-3.8-flash
+  - google 4/gemini-3.8-flash
+  - google 5/gemini-3.8-flash
+  - google 6/gemini-3.8-flash
+  - google 7/gemini-3.8-flash
+  - google 8/gemini-3.8-flash
+  - google 9/gemini-3.8-flash
+  lint_fix:
+  - groq 2/openai/gpt-oss-120b
+  - groq 3/openai/gpt-oss-120b
+  - groq 4/openai/gpt-oss-120b
+  - groq 5/openai/gpt-oss-120b
+  - groq 6/openai/gpt-oss-120b
+  - groq 7/openai/gpt-oss-120b
+  - cloud flare 2/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b
+  embeddings:
+  - local/ollama/nomic-embed-text
+  - google-2/text-embedding-004
+  - google 3/text-embedding-004
+  - google 4/text-embedding-004
+  - google 5/text-embedding-004
+  - google 6/text-embedding-004
+  - google 7/text-embedding-004
+  - google 8/text-embedding-004
+  - google 9/text-embedding-004
+token_limits:
+  ingest_chunk: 8000
+  query_context: 16000
+  lint_batch: 32000
