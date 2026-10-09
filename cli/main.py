@@ -90,6 +90,7 @@ from cli.hooks_cmd import install_hooks_cmd
 from cli.mcp_cmd import mcp_cmd
 from cli.mcp_router_cmd import mcp_router_cmd
 from cli.moc_cmd import moc_cmd
+from cli.monitor_cmd import monitor_cmd
 from cli.ui_server import dashboard_cmd
 
 cli.add_command(init_cmd)
@@ -105,6 +106,7 @@ cli.add_command(mcp_router_cmd)
 cli.add_command(dashboard_cmd)
 cli.add_command(moc_cmd)
 cli.add_command(install_hooks_cmd)
+cli.add_command(monitor_cmd)
 
 
 if __name__ == "__main__":
