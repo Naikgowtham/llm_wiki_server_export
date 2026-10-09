@@ -618,23 +618,46 @@ async def run_ingest(
             except Exception:
                 pass
             
+            # Validate page completeness
+            if len(new_content.strip()) < 100:
+                logger.warning(f"Rejecting truncated page ({len(new_content.strip())} chars): {rel_path}")
+                continue
+            try:
+                fm_valid, _ = parse_frontmatter(new_content)
+                if not fm_valid.get("title") or not fm_valid.get("type"):
+                    logger.warning(f"Rejecting page with missing frontmatter title/type: {rel_path}")
+                    continue
+            except Exception:
+                logger.warning(f"Rejecting unparseable page: {rel_path}")
+                continue
+
             # F-03: Numeric claim gate
             try:
                 fm, body = parse_frontmatter(new_content)
                 body_to_check = body
             except Exception:
                 body_to_check = new_content
+                fm = {}
                 
             numbers_in_new = re.findall(r'\b\d+(?:[\.,]\d+)?\b', body_to_check)
             has_fabrication = False
             for num in numbers_in_new:
-                if not re.search(r'\b' + re.escape(num) + r'\b', source_content) and num not in existing_index:
-                    logger.warning(f"Fabricated number detected: {num} in {rel_path}. Rejecting page.")
+                clean_num = num.replace(",", "")
+                if (not re.search(r'\b' + re.escape(num) + r'\b', source_content) 
+                    and clean_num not in source_content 
+                    and num not in existing_index):
+                    logger.warning(f"Unverified number detected: {num} in {rel_path}. Downgrading confidence to low.")
                     has_fabrication = True
                     break
                     
             if has_fabrication:
-                continue # Reject page completely
+                try:
+                    fm, body = parse_frontmatter(new_content)
+                    fm["confidence"] = "low"
+                    from lib.utils import render_frontmatter
+                    new_content = render_frontmatter(fm, body)
+                except Exception:
+                    pass
                     
             proposed_changes.append(
                 FileChange(
@@ -1029,6 +1052,8 @@ async def run_lint(
     mechanical_issues = [{"category": "frontmatter", "file_path": issue.split(" -> ")[0], "description": issue.split(" -> ")[1]} for issue in frontmatter_issues]
 
     for md in (wiki_dir / "wiki").rglob("*.md"):
+        if ".llm-wiki" in md.parts:
+            continue
         if md.name in ("index.md", "log.md", "overview.md") or md.name.endswith("_MOC.md"):
             continue
         if staged_md_files is not None and md.resolve() not in staged_md_files:

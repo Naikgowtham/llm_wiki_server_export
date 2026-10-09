@@ -137,20 +137,20 @@ def audit_single_wiki(
     if mechanical_issues:
         console.print("\n[bold yellow]Mechanical Checks (Zero-Token Python):[/bold yellow]")
         for issue in mechanical_issues[:10]:
-            cat = escape(issue.get("category", "mechanical"))
-            file_p = escape(issue.get("file_path", ""))
-            desc = escape(issue.get("description", ""))
-            console.print(f"  • [[{file_p}]] [{cat}]: {desc}")
+            fp = issue.get("file_path", "")
+            cat = issue.get("category", "mechanical")
+            desc = issue.get("description", "")
+            console.print(escape(f"  • [[{fp}]] [{cat}]: {desc}"))
         if len(mechanical_issues) > 10:
             console.print(f"  ... and {len(mechanical_issues) - 10} more.")
 
     if semantic_issues:
         console.print("\n[bold magenta]Semantic Audit Issues:[/bold magenta]")
         for issue in semantic_issues[:10]:
-            cat = escape(issue.get("category", "issue"))
-            file_p = escape(issue.get("file_path", ""))
-            desc = escape(issue.get("description", ""))
-            console.print(f"  • [[{file_p}]] [{cat}]: {desc}")
+            fp = issue.get("file_path", "")
+            cat = issue.get("category", "issue")
+            desc = issue.get("description", "")
+            console.print(escape(f"  • [[{fp}]] [{cat}]: {desc}"))
         if len(semantic_issues) > 10:
             console.print(f"  ... and {len(semantic_issues) - 10} more.")
 

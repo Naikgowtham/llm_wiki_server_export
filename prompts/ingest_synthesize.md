@@ -21,7 +21,7 @@ Your task is to compile these extractions into clean, interlinked Markdown pages
 ## Synthesis Rules & Editorial Standards (CRITICAL - FOLLOW EXACTLY)
 1. **Source Page:** Create `wiki/sources/{{ source_slug }}.md` containing the executive summary, key findings with citations, and lists of covered entities and concepts.
 2. **Entity & Concept Selection:**
-   - Synthesize the top 8 to 12 most prominent, central entities and concepts from the extractions (focus on the primary subject, major generations/iterations, core powertrain/architectural technologies, and key organizations).
+   - Synthesize the top 6 to 8 most prominent, central entities and concepts from the extractions (focus on the primary subject, major generations/iterations, core powertrain/architectural technologies, and key organizations).
    - **CRITICAL:** If a page for this entity/concept ALREADY EXISTS in the index above, you MUST `update` it using its EXACT existing path from the index. Do NOT create a new parallel file.
    - If the page does NOT already exist in the index, `create` it in `wiki/entities/<slug>.md` or `wiki/concepts/<slug>.md`.
    - **IMPORTANT:** Use strictly lowercase kebab-case for ALL filenames (e.g., `chevrolet-impala.md`, not `Chevrolet_Impala.md`).
