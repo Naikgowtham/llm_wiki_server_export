@@ -209,3 +209,46 @@ def test_ingest_concurrency_ordering(wiki_dir: Path, monkeypatch):
     assert extractions[1][0]["chunk_id"] == 2
     assert extractions[2][0]["chunk_id"] == 3
     assert extractions[3][0]["chunk_id"] == 4
+
+
+def test_ingest_rejection_leaves_raw_cache_untouched(wiki_dir: Path, monkeypatch):
+    """Bug #1 regression test: rejected review must NOT write to raw cache."""
+    mock_synth = json.dumps([
+        {
+            "path": "wiki/concepts/quantum.md",
+            "operation": "create",
+            "reason": "new concept",
+            "content": "---\ntitle: Quantum\ntype: concept\ntags: [physics]\n---\nQuantum computing utilizes quantum mechanics such as superposition and entanglement to perform complex state calculations efficiently."
+        }
+    ])
+    provider = MockLLMProvider(["[]", mock_synth, "[]"])
+
+    raw_file = wiki_dir / "raw" / "quantum.md"
+    raw_file.write_text("# Quantum Computing\nOverview of qubits and entanglement.\n")
+
+    from lib.config import WikiConfig
+    monkeypatch.setattr("lib.wiki_ops.load_wiki_config", lambda d: WikiConfig(domain_name="test"))
+
+    # Mock review_changes to simulate user rejecting the changes (e.g. pressing 's')
+    monkeypatch.setattr("lib.differ.review_changes", lambda changes: [])
+
+    import asyncio
+    applied = asyncio.run(run_ingest(raw_file, wiki_dir, provider=provider, auto_approve=False))
+
+    raw_cache_file = wiki_dir / "wiki" / ".llm-wiki" / "raw_cache" / raw_file.name
+
+    # 1. Because changes were rejected, applied is empty AND raw cache must NOT be written
+    assert applied == []
+    assert not raw_cache_file.exists()
+
+    # 2. Now approve changes: raw cache must be created
+    provider2 = MockLLMProvider(["[]", mock_synth, "[]"])
+    applied2 = asyncio.run(run_ingest(raw_file, wiki_dir, provider=provider2, auto_approve=True))
+    assert len(applied2) == 1
+    assert raw_cache_file.exists()
+    assert raw_cache_file.read_text(encoding="utf-8") == raw_file.read_text(encoding="utf-8")
+
+    # 3. Running again with unchanged file must hit the cache and skip without calling provider
+    applied3 = asyncio.run(run_ingest(raw_file, wiki_dir, provider=None, auto_approve=True))
+    assert applied3 == []
+

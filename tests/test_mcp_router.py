@@ -166,6 +166,34 @@ def test_add_inbox_note(temp_wikis_dir):
     assert "transformers" in text
 
 
+def test_add_inbox_note_yaml_escaping(temp_wikis_dir):
+    """Bug #3 regression test: frontmatter must escape special characters and prevent YAML injection."""
+    from lib.utils import parse_frontmatter
+
+    manager = WikiRouterManager(temp_wikis_dir)
+    evil_title = 'Untrusted "Paper" Title\ninjected_field: true\nmalicious: [1, 2]'
+    msg = manager.add_inbox_note(
+        "ai-wiki",
+        title=evil_title,
+        content="Note body.",
+        tags=["ai", "dangerous: tag"]
+    )
+    assert "Successfully created inbox note" in msg
+
+    inbox_files = sorted((temp_wikis_dir / "ai-wiki" / "raw" / "inbox").glob("*.md"))
+    # The latest created file
+    target_file = inbox_files[-1]
+    text = target_file.read_text(encoding="utf-8")
+
+    fm, body = parse_frontmatter(text)
+    assert fm["title"] == evil_title
+    assert "injected_field" not in fm
+    assert "malicious" not in fm
+    assert fm["type"] == "source"
+    assert "dangerous: tag" in fm["tags"]
+    assert "Note body." in body
+
+
 def test_append_to_log(temp_wikis_dir):
     manager = WikiRouterManager(temp_wikis_dir)
     log_file = temp_wikis_dir / "ai-wiki" / "wiki" / "log.md"

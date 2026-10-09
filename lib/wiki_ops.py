@@ -760,11 +760,14 @@ async def run_ingest(
         if config.ingest_settings.get("auto_commit", True):
             commit_if_git(wiki_dir, f"ingest: {source_filename}")
 
-    # Save to raw cache
-    raw_cache_dir.mkdir(parents=True, exist_ok=True)
-    raw_cache_file.write_text(source_content, encoding="utf-8")
+        # Save to raw cache only when changes were actually applied to the vault
+        raw_cache_dir.mkdir(parents=True, exist_ok=True)
+        raw_cache_file.write_text(source_content, encoding="utf-8")
+        emit_progress(f"Completed ingestion of {source_filename}", 100)
+    else:
+        logger.info(f"No changes applied for {source_filename}. Leaving raw cache untouched.")
+        emit_progress(f"Ingestion finished without applying changes for {source_filename}", 100)
 
-    emit_progress(f"Completed ingestion of {source_filename}", 100)
     return applied
 
 

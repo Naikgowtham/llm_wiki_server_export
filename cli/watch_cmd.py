@@ -27,7 +27,7 @@ def get_raw_files_state(raw_dir: Path) -> Dict[str, tuple[float, int]]:
 
     for f in raw_dir.glob("**/*"):
         if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in SUPPORTED_EXTENSIONS:
-            if "assets" in f.parts:
+            if any(p in f.parts for p in ("assets", "failed", "quarantine")):
                 continue
             try:
                 st = f.stat()
@@ -133,6 +133,9 @@ def watch_cmd(
     known_states: Dict[Path, Dict[str, tuple[float, int]]] = {}
     ingested_names_map: Dict[Path, Set[str]] = {}
     last_lint_times: Dict[Path, float] = {}
+    failure_counts: Dict[tuple[Path, str], int] = {}
+    retry_after: Dict[tuple[Path, str], float] = {}
+    MAX_FAILURE_ATTEMPTS = 5
 
     for w_dir in discovered:
         raw_dir = w_dir / "raw"
@@ -189,8 +192,31 @@ Interval:      {interval}s{" (Periodic lint: " + str(lint_interval) + "s)" if li
 
                 new_or_modified = []
                 for rel_path, (mtime, size) in current_state.items():
+                    file_key = (w_dir, rel_path)
                     file_obj = raw_dir / rel_path
                     file_stem = file_obj.stem
+
+                    # Check if file has exceeded failure threshold -> quarantine to raw/failed/
+                    if failure_counts.get(file_key, 0) >= MAX_FAILURE_ATTEMPTS:
+                        failed_dir = raw_dir / "failed"
+                        failed_dir.mkdir(parents=True, exist_ok=True)
+                        dest = failed_dir / file_obj.name
+                        try:
+                            file_obj.rename(dest)
+                            console.print(
+                                f"[bold red]⛔ Quarantined failing source after {MAX_FAILURE_ATTEMPTS} attempts:[/bold red] "
+                                f"{file_obj.name} -> raw/failed/{file_obj.name}\n"
+                            )
+                        except Exception as q_err:
+                            console.print(f"[bold red]Failed to quarantine {file_obj.name}:[/bold red] {q_err}\n")
+                            retry_after[file_key] = time.time() + 3600.0
+                        failure_counts.pop(file_key, None)
+                        retry_after.pop(file_key, None)
+                        continue
+
+                    # Check backoff window
+                    if time.time() < retry_after.get(file_key, 0.0):
+                        continue
 
                     from lib.utils import slugify
                     is_ingested = (
@@ -201,6 +227,9 @@ Interval:      {interval}s{" (Periodic lint: " + str(lint_interval) + "s)" if li
                     if not is_ingested:
                         new_or_modified.append(file_obj)
                     elif rel_path in known and (mtime > known[rel_path][0] or size != known[rel_path][1]):
+                        # File was modified by user: reset failure counter to provide fresh attempts
+                        failure_counts.pop(file_key, None)
+                        retry_after.pop(file_key, None)
                         new_or_modified.append(file_obj)
 
                 known_states[w_dir] = current_state
@@ -227,6 +256,9 @@ Interval:      {interval}s{" (Periodic lint: " + str(lint_interval) + "s)" if li
                     console.print(f"\n[bold green]⚡ New source detected in {w_dir.name}:[/bold green] [bold cyan]{file_path.name}[/bold cyan]")
                     console.print(f"[dim]Starting automated compilation into {w_dir.name}...[/dim]")
 
+                    rel_name = str(file_path.relative_to(raw_dir))
+                    file_key = (w_dir, rel_name)
+
                     try:
                         applied = asyncio.run(run_ingest(
                             source_file=file_path,
@@ -237,16 +269,41 @@ Interval:      {interval}s{" (Periodic lint: " + str(lint_interval) + "s)" if li
                         if applied:
                             ingested.add(file_path.stem)
                             ingested.add(file_path.name)
+                            failure_counts.pop(file_key, None)
+                            retry_after.pop(file_key, None)
                             console.print(
                                 f"[bold green]✓ Compiled and committed {len(applied)} wiki page(s) for {file_path.name} in {w_dir.name}![/bold green]\n"
                             )
                             ingested_any = True
                         else:
-                            console.print(f"[yellow]No modifications were applied for {file_path.name}[/yellow]\n")
+                            count = failure_counts.get(file_key, 0) + 1
+                            failure_counts[file_key] = count
+                            backoff = min(300.0, 5.0 * (2 ** (count - 1)))
+                            retry_after[file_key] = time.time() + backoff
+                            console.print(
+                                f"[yellow]No modifications were applied for {file_path.name}. "
+                                f"Backing off {int(backoff)}s (attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                            )
                     except LLMProviderError as e:
-                        console.print(f"[bold red]LLM Provider Error in {w_dir.name}:[/bold red] {e}\n")
+                        count = failure_counts.get(file_key, 0) + 1
+                        failure_counts[file_key] = count
+                        backoff = min(300.0, 5.0 * (2 ** (count - 1)))
+                        retry_after[file_key] = time.time() + backoff
+                        console.print(f"[bold red]LLM Provider Error in {w_dir.name}:[/bold red] {e}")
+                        console.print(
+                            f"[yellow]Will retry {file_path.name} in {int(backoff)}s "
+                            f"(attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                        )
                     except Exception as e:
-                        console.print(f"[bold red]Ingestion error for {file_path.name} in {w_dir.name}:[/bold red] {e}\n")
+                        count = failure_counts.get(file_key, 0) + 1
+                        failure_counts[file_key] = count
+                        backoff = min(300.0, 5.0 * (2 ** (count - 1)))
+                        retry_after[file_key] = time.time() + backoff
+                        console.print(f"[bold red]Ingestion error for {file_path.name} in {w_dir.name}:[/bold red] {e}")
+                        console.print(
+                            f"[yellow]Will retry {file_path.name} in {int(backoff)}s "
+                            f"(attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                        )
 
                 # If any files were ingested and lint is enabled, run post-ingest linting!
                 if ingested_any and lint:

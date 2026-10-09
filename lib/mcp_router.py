@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from lib.config import WikiConfig, load_wiki_config
 from lib.providers import LLMProvider, RateLimitCooldownTracker
-from lib.utils import build_link_graph, extract_wikilinks, parse_frontmatter, slugify, today_str
+from lib.utils import build_link_graph, extract_wikilinks, parse_frontmatter, render_frontmatter, slugify, today_str
 from lib.vector_store import WikiVectorStore
 
 logger = logging.getLogger(__name__)
@@ -316,18 +316,14 @@ class WikiRouterManager:
             target_path = inbox_dir / filename
             counter += 1
 
-        tags_yaml = "\n".join([f"  - {t}" for t in (tags or [])])
-        tags_block = f"\ntags:\n{tags_yaml}" if tags else "\ntags: []"
-
-        file_body = (
-            f"---\n"
-            f"title: \"{title}\"\n"
-            f"created: \"{date_prefix}\"\n"
-            f"type: source{tags_block}\n"
-            f"---\n\n"
-            f"# {title}\n\n"
-            f"{content.strip()}\n"
-        )
+        frontmatter = {
+            "title": title,
+            "created": date_prefix,
+            "type": "source",
+            "tags": tags or [],
+        }
+        body = f"# {title}\n\n{content.strip()}\n"
+        file_body = render_frontmatter(frontmatter, body)
 
         target_path.write_text(file_body, encoding="utf-8")
         return f"Successfully created inbox note at raw/inbox/{filename}"

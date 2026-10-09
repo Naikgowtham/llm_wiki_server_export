@@ -22,24 +22,36 @@ class LLMProviderError(Exception):
 class RateLimitCooldownTracker:
     """Tracks rate-limited models and cooldown expirations globally across all operations and wikis."""
     _cooldowns: Dict[str, float] = {}
+    _quota_exhausted: Set[str] = set()
 
     @classmethod
     def is_cooling_down(cls, model_id: str) -> bool:
         expires = cls._cooldowns.get(model_id)
         if not expires:
+            cls._quota_exhausted.discard(model_id)
             return False
         if time.time() >= expires:
             cls._cooldowns.pop(model_id, None)
+            cls._quota_exhausted.discard(model_id)
             return False
         return True
 
     @classmethod
-    def mark_cooling_down(cls, model_id: str, cooldown_seconds: float = 60.0):
+    def is_quota_exhausted(cls, model_id: str) -> bool:
+        return cls.is_cooling_down(model_id) and model_id in cls._quota_exhausted
+
+    @classmethod
+    def mark_cooling_down(cls, model_id: str, cooldown_seconds: float = 60.0, is_quota_exhausted: bool = False):
         cls._cooldowns[model_id] = time.time() + cooldown_seconds
+        if is_quota_exhausted or cooldown_seconds >= 300.0:
+            cls._quota_exhausted.add(model_id)
+        else:
+            cls._quota_exhausted.discard(model_id)
 
     @classmethod
     def clear(cls):
         cls._cooldowns.clear()
+        cls._quota_exhausted.clear()
 
     @classmethod
     def get_cooldowns(cls) -> Dict[str, float]:
@@ -51,13 +63,18 @@ class RateLimitCooldownTracker:
                 active[m] = round(remaining, 1)
             else:
                 cls._cooldowns.pop(m, None)
+                cls._quota_exhausted.discard(m)
         return active
 
     @classmethod
     def filter_available_models(cls, models: List[str]) -> List[str]:
         available = [m for m in models if not cls.is_cooling_down(m)]
-        # If all candidate models are cooling down, bypass cooldown so operations don't deadlock
-        return available if available else models
+        if available:
+            return available
+        # If all candidate models are cooling down, only bypass for temporary short rate limits (<300s).
+        # Models with daily quota exhaustion must NEVER be bypassed to avoid retry loops hammering exhausted APIs.
+        short_cooldown = [m for m in models if cls.is_cooling_down(m) and m not in cls._quota_exhausted]
+        return short_cooldown
 
 
 class LLMProvider:
@@ -136,6 +153,10 @@ class LLMProvider:
             LLMProvider._call_counter += 1
             base_models = base_models[offset:] + base_models[:offset]
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)  # Circular rotation (max 2 loops)
+        if not models:
+            raise LLMProviderError(
+                f"All candidate models in fallback chain for operation '{operation}' are currently cooling down or quota-exhausted: {base_models}"
+            )
 
         try:
             import litellm
@@ -340,6 +361,10 @@ class LLMProvider:
             LLMProvider._call_counter += 1
             base_models = base_models[offset:] + base_models[:offset]
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)
+        if not models:
+            raise LLMProviderError(
+                f"All candidate models in fallback chain for operation '{operation}' are currently cooling down or quota-exhausted: {base_models}"
+            )
 
         try:
             import litellm
@@ -461,6 +486,10 @@ class LLMProvider:
         """
         base_models = self.config.get_fallback_models(operation)
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)
+        if not models:
+            raise LLMProviderError(
+                f"All candidate models in fallback chain for operation '{operation}' are currently cooling down or quota-exhausted: {base_models}"
+            )
 
         try:
             import litellm

@@ -42,3 +42,46 @@ def test_rate_limit_cooldown_tracker():
     assert RateLimitCooldownTracker.filter_available_models(["m1", "m2", "m3"]) == ["m1", "m2", "m3"]
     RateLimitCooldownTracker.clear()
 
+
+def test_quota_exhaustion_does_not_bypass():
+    """Bug #4 regression test: daily quota exhaustion must never be unbanned via the deadlock bypass."""
+    from lib.providers import RateLimitCooldownTracker
+
+    RateLimitCooldownTracker.clear()
+    RateLimitCooldownTracker.mark_cooling_down("m1", cooldown_seconds=3600.0, is_quota_exhausted=True)
+    RateLimitCooldownTracker.mark_cooling_down("m2", cooldown_seconds=3600.0, is_quota_exhausted=True)
+
+    assert RateLimitCooldownTracker.is_cooling_down("m1")
+    assert RateLimitCooldownTracker.is_quota_exhausted("m1")
+
+    # When all candidate models have quota exhausted, must NOT un-ban them
+    filtered = RateLimitCooldownTracker.filter_available_models(["m1", "m2"])
+    assert filtered == []
+
+    # If mixed: m1 is quota exhausted, m2 is short rate limit
+    RateLimitCooldownTracker.clear()
+    RateLimitCooldownTracker.mark_cooling_down("m1", cooldown_seconds=3600.0, is_quota_exhausted=True)
+    RateLimitCooldownTracker.mark_cooling_down("m2", cooldown_seconds=30.0, is_quota_exhausted=False)
+    filtered = RateLimitCooldownTracker.filter_available_models(["m1", "m2"])
+    assert filtered == ["m2"]
+    RateLimitCooldownTracker.clear()
+
+
+def test_quota_exhaustion_fails_fast():
+    """Bug #4 regression test: when all models are quota exhausted, operations fail fast immediately."""
+    from lib.providers import LLMProvider, RateLimitCooldownTracker, LLMProviderError
+
+    RateLimitCooldownTracker.clear()
+    RateLimitCooldownTracker.mark_cooling_down("test/m1", cooldown_seconds=3600.0, is_quota_exhausted=True)
+
+    config = ProvidersConfig(
+        providers={"test": {"api_key": "dummy", "models": ["m1"]}},
+        fallback_chain={"query": ["test/m1"]}
+    )
+    pm = LLMProvider(config)
+    with pytest.raises(LLMProviderError, match="cooling down or quota-exhausted"):
+        pm.call([{"role": "user", "content": "hi"}], operation="query")
+
+    RateLimitCooldownTracker.clear()
+
+

@@ -22,11 +22,21 @@ def test_get_raw_files_state(tmp_path: Path):
     ignored = raw_dir / ".hidden.md"
     ignored.write_text("Secret", encoding="utf-8")
 
+    failed_dir = raw_dir / "failed"
+    failed_dir.mkdir()
+    (failed_dir / "broken.md").write_text("broken", encoding="utf-8")
+
+    quarantine_dir = raw_dir / "quarantine"
+    quarantine_dir.mkdir()
+    (quarantine_dir / "quarantined.pdf").write_bytes(b"%PDF-1.4 dummy")
+
     state = get_raw_files_state(raw_dir)
     assert "doc1.md" in state
     assert "doc2.txt" in state
     assert "doc3.pdf" in state
     assert ".hidden.md" not in state
+    assert "failed/broken.md" not in state
+    assert "quarantine/quarantined.pdf" not in state
     assert len(state) == 3
 
 
