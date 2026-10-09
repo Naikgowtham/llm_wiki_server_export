@@ -479,18 +479,82 @@ async def run_ingest(
 
     # Maintain order of chunks and compact high-token payloads for synthesis
     all_extractions = [res for idx, res in sorted(extraction_results.items())]
-    compact_extractions = []
-    for item in all_extractions:
-        if isinstance(item, dict) and len(all_extractions) > 4:
-            compact_extractions.append({
-                "summary": item.get("summary", ""),
-                "entities": item.get("entities", [])[:6],
-                "concepts": item.get("concepts", [])[:5],
-                "claims": item.get("claims", [])[:6],
-                "relationships": item.get("relationships", [])[:6],
-            })
-        else:
-            compact_extractions.append(item)
+    if len(all_extractions) > 4:
+        # Aggregate across chunks to maintain a dense, high-signal payload within token budgets (<3,500 tokens)
+        chunk_summaries = []
+        entity_map = {}
+        concept_map = {}
+        all_claims = []
+        all_relationships = []
+        all_caveats = []
+
+        for idx, item in enumerate(all_extractions):
+            if not isinstance(item, dict):
+                continue
+            s = item.get("summary", "").strip()
+            if s:
+                chunk_summaries.append(f"Section {idx + 1}: {s}")
+
+            for ent in item.get("entities", []):
+                if isinstance(ent, dict) and ent.get("name"):
+                    name = ent["name"].strip()
+                    if name not in entity_map:
+                        entity_map[name] = {
+                            "name": name,
+                            "type": ent.get("type", "entity"),
+                            "facts": [],
+                            "count": 0,
+                        }
+                    entity_map[name]["count"] += 1
+                    for f in ent.get("facts", []):
+                        if f not in entity_map[name]["facts"] and len(entity_map[name]["facts"]) < 3:
+                            entity_map[name]["facts"].append(f)
+
+            for conc in item.get("concepts", []):
+                if isinstance(conc, dict) and conc.get("name"):
+                    cname = conc["name"].strip()
+                    if cname not in concept_map:
+                        concept_map[cname] = {
+                            "name": cname,
+                            "definition": conc.get("definition", ""),
+                            "properties": [],
+                            "count": 0,
+                        }
+                    concept_map[cname]["count"] += 1
+                    for p in conc.get("properties", []):
+                        if p not in concept_map[cname]["properties"] and len(concept_map[cname]["properties"]) < 3:
+                            concept_map[cname]["properties"].append(p)
+
+            for cl in item.get("claims", []):
+                if isinstance(cl, dict) and cl.get("statement"):
+                    all_claims.append(cl)
+
+            for rel in item.get("relationships", []):
+                if isinstance(rel, dict) and rel.get("subject") and rel.get("object"):
+                    all_relationships.append(rel)
+
+            for cav in item.get("contradictions_or_caveats", []):
+                if cav and cav not in all_caveats:
+                    all_caveats.append(cav)
+
+        top_entities = sorted(entity_map.values(), key=lambda x: x["count"], reverse=True)[:14]
+        for e in top_entities:
+            e.pop("count", None)
+
+        top_concepts = sorted(concept_map.values(), key=lambda x: x["count"], reverse=True)[:10]
+        for c in top_concepts:
+            c.pop("count", None)
+
+        compact_extractions = {
+            "document_section_summaries": chunk_summaries[:15],
+            "prominent_entities": top_entities,
+            "prominent_concepts": top_concepts,
+            "key_claims": all_claims[:15],
+            "key_relationships": all_relationships[:15],
+            "caveats": all_caveats[:8],
+        }
+    else:
+        compact_extractions = all_extractions
 
     # 2. Synthesis (new pages)
     synth_template = get_template("ingest_synthesize.md")

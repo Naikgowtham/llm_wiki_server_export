@@ -207,9 +207,13 @@ class LLMProvider:
                 for attempt in range(2):  # Only retry once before moving to next fallback
                     try:
                         response = litellm.completion(**kwargs)
-                        content = response.choices[0].message.content
-                        if content:
+                        msg = response.choices[0].message
+                        content = getattr(msg, "content", None) or ""
+                        if not content and hasattr(msg, "reasoning_content") and msg.reasoning_content:
+                            content = msg.reasoning_content
+                        if content and content.strip():
                             return content.strip()
+                        raise LLMProviderError(f"Model {model_id} returned empty content.")
                     except Exception as attempt_e:
                         if attempt == 1:
                             raise attempt_e
@@ -401,9 +405,13 @@ class LLMProvider:
                 for attempt in range(2):
                     try:
                         response = await litellm.acompletion(**kwargs)
-                        content = response.choices[0].message.content
-                        if content:
+                        msg = response.choices[0].message
+                        content = getattr(msg, "content", None) or ""
+                        if not content and hasattr(msg, "reasoning_content") and msg.reasoning_content:
+                            content = msg.reasoning_content
+                        if content and content.strip():
                             return content.strip()
+                        raise LLMProviderError(f"Model {model_id} returned empty content.")
                     except Exception as attempt_e:
                         if attempt == 1:
                             raise attempt_e
