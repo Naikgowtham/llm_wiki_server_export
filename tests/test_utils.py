@@ -85,3 +85,44 @@ def test_read_source_file_pdf(tmp_path):
     result = read_source_file(pdf_file)
     assert "Sample PDF Ingestion Text" in result
 
+
+def test_build_link_graph(tmp_path):
+    """Test building link graph from markdown notes."""
+    from lib.utils import build_link_graph
+
+    wiki_sub = tmp_path / "wiki"
+    wiki_sub.mkdir()
+    (wiki_sub / "a.md").write_text("Links to [[b]] and [[c]].", encoding="utf-8")
+    (wiki_sub / "b.md").write_text("Links to [[c]].", encoding="utf-8")
+    (wiki_sub / "c.md").write_text("No outgoing links.", encoding="utf-8")
+
+    graph = build_link_graph(tmp_path)
+    assert "b" in graph.get("a", set())
+    assert "c" in graph.get("a", set())
+    assert "c" in graph.get("b", set())
+    assert len(graph.get("c", set())) == 0
+
+
+def test_resolve_vault_path(tmp_path):
+    """Test resolving wiki vault paths directly and by relative name."""
+    from lib.utils import resolve_vault_path
+
+    vault_dir = tmp_path / "my-vault"
+    (vault_dir / "wiki").mkdir(parents=True)
+
+    # 1. Direct path
+    assert resolve_vault_path(str(vault_dir)) == vault_dir.resolve()
+
+    # 2. Non-existent path returns None
+    assert resolve_vault_path(str(tmp_path / "nonexistent")) is None
+
+
+def test_count_tokens_approx():
+    """Test token estimation."""
+    from lib.utils import count_tokens_approx
+
+    tokens = count_tokens_approx("Hello world, this is a token test sentence.")
+    assert tokens > 0
+    assert count_tokens_approx("") == 0
+
+

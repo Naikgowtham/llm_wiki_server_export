@@ -60,3 +60,41 @@ Page 3 summary.
     assert "Page 2" in chunks[1].content
     assert "Page 3" in chunks[2].content
 
+
+def test_split_document_fixed_size():
+    """Test fixed_size sliding window chunking."""
+    text = "word " * 500
+    chunks = split_document(text, strategy="fixed_size", max_tokens=100, overlap_tokens=20)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert chunk.token_count > 0
+
+
+def test_prune_content():
+    """Test pre-LLM context pruning removes HTML, TOC, and simplifies URLs."""
+    from lib.splitter import _prune_content
+    raw = "<div>Hello</div>\nhttps://example.com/very/long/tracking/url?id=123\n\n## Table of Contents\n- Link 1\n- Link 2\n\nActual text."
+    pruned = _prune_content(raw)
+    assert "<div>" not in pruned
+    assert "<URL>" in pruned
+    assert "## Table of Contents" not in pruned
+    assert "Actual text." in pruned
+
+
+def test_split_document_empty():
+    """Test splitting empty string returns empty list."""
+    assert split_document("") == []
+    assert split_document("   \n\t  ") == []
+
+
+def test_split_semantic_fallback():
+    """Test semantic chunking with mock provider."""
+    class MockSemanticProvider:
+        def embed(self, text):
+            return [1.0, 0.0] if "1" in text else [0.0, 1.0]
+
+    text = "Paragraph 1.\n\nParagraph 2.\n\nParagraph 3."
+    chunks = split_document(text, strategy="semantic", max_tokens=50, provider=MockSemanticProvider())
+    assert len(chunks) >= 1
+
+

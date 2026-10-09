@@ -252,3 +252,115 @@ def test_ingest_rejection_leaves_raw_cache_untouched(wiki_dir: Path, monkeypatch
     applied3 = asyncio.run(run_ingest(raw_file, wiki_dir, provider=None, auto_approve=True))
     assert applied3 == []
 
+
+def test_path_traversal_validation(wiki_dir: Path):
+    """Test F-02 path traversal protection."""
+    from lib.wiki_ops import _validate_and_resolve_path
+
+    # Valid relative path inside wiki/
+    valid = _validate_and_resolve_path(wiki_dir, "wiki/concepts/test.md")
+    assert valid == (wiki_dir / "wiki" / "concepts" / "test.md").resolve()
+
+    # Path attempting directory breakout
+    with pytest.raises(ValueError, match="Path must be within wiki/ directory"):
+        _validate_and_resolve_path(wiki_dir, "../../../etc/passwd")
+
+    with pytest.raises(ValueError, match="Path must be within wiki/ directory"):
+        _validate_and_resolve_path(wiki_dir, "raw/source.md")
+
+
+def test_update_wiki_index(wiki_dir: Path):
+    """Test update_wiki_index scans pages and writes index.md."""
+    from lib.wiki_ops import update_wiki_index
+
+    # Initialize index.md
+    index_file = wiki_dir / "wiki" / "index.md"
+    index_file.write_text("# Index\n", encoding="utf-8")
+
+    # Create dummy pages
+    (wiki_dir / "wiki" / "concepts" / "ai.md").write_text("---\ntitle: Artificial Intelligence\n---\nBody", encoding="utf-8")
+    (wiki_dir / "wiki" / "sources" / "paper.md").write_text("---\ntitle: Research Paper\n---\nBody", encoding="utf-8")
+
+    update_wiki_index(wiki_dir)
+    content = index_file.read_text(encoding="utf-8")
+    assert "[[Artificial Intelligence]]" in content or "concepts/ai.md" in content or "Artificial Intelligence" in content
+    assert "Research Paper" in content or "sources/paper.md" in content
+
+
+def test_run_query_without_and_with_fileback(wiki_dir: Path, monkeypatch):
+    """Test run_query for grounded answers and file-back persistence."""
+    from lib.wiki_ops import run_query
+    from lib.config import WikiConfig, ProvidersConfig
+    monkeypatch.setattr("lib.wiki_ops.load_wiki_config", lambda d: WikiConfig(domain_name="test"))
+
+    # Mock provider
+    class MockQueryProvider:
+        def __init__(self):
+            self.config = ProvidersConfig()
+        def embed(self, text):
+            return [0.1, 0.2]
+        async def acall(self, messages, operation="query_answer", **kwargs):
+            if operation == "query_answer":
+                return "The battery capacity is 100 kWh."
+            elif operation == "query_fileback":
+                return "---\ntitle: Query Battery\ntype: query\n---\n## Answer\n100 kWh."
+            return "ok"
+
+    provider = MockQueryProvider()
+
+    class MockStore:
+        def search_similar_with_metadata(self, q, k=10, distance_threshold=0.5, min_results=0):
+            return [{"path": "wiki/concepts/battery.md", "title": "Battery", "content": "100 kWh pack", "distance": 0.1}]
+
+    # 1. Query without file-back
+    import asyncio
+    ans, filed = asyncio.run(run_query("Battery size?", wiki_dir, provider=provider, file_back=False, store=MockStore()))
+    assert ans == "The battery capacity is 100 kWh."
+    assert filed is None
+
+    # 2. Query with file-back
+    ans2, filed2 = asyncio.run(run_query("Battery size?", wiki_dir, provider=provider, file_back=True, store=MockStore()))
+    assert ans2 == "The battery capacity is 100 kWh."
+    assert filed2 is not None
+    assert filed2.exists()
+    assert "100 kWh." in filed2.read_text(encoding="utf-8")
+
+
+def test_run_lint_auto_fix(wiki_dir: Path, monkeypatch):
+    """Test run_lint detecting issues and applying fixes."""
+    from lib.wiki_ops import run_lint
+    from lib.config import WikiConfig, ProvidersConfig
+    monkeypatch.setattr("lib.wiki_ops.load_wiki_config", lambda d: WikiConfig(
+        domain_name="test",
+        required_frontmatter=["title", "type", "tags"]
+    ))
+
+    # Page missing required frontmatter
+    page = wiki_dir / "wiki" / "concepts" / "fixme.md"
+    page.write_text("---\ntitle: Fix Me\ntype: concept\n---\nPage without tags.", encoding="utf-8")
+
+    # Mock fix provider returning a fix file change
+    class MockLintFixProvider:
+        def __init__(self):
+            self.config = ProvidersConfig()
+        def embed(self, text):
+            return [0.1, 0.2]
+        async def acall(self, messages, operation="lint_audit", **kwargs):
+            if operation == "lint_audit":
+                return "[]"
+            elif operation == "lint_fix":
+                return json.dumps([
+                    {
+                        "path": "wiki/concepts/fixme.md",
+                        "operation": "update",
+                        "reason": "Added missing tags",
+                        "content": "---\ntitle: Fix Me\ntype: concept\ntags: [fixed]\n---\nPage without tags."
+                    }
+                ])
+            return "[]"
+
+    import asyncio
+    report = asyncio.run(run_lint(wiki_dir, provider=MockLintFixProvider(), fix=True, auto_approve=True))
+    assert page.read_text(encoding="utf-8").find("tags: [fixed]") != -1
+
+
