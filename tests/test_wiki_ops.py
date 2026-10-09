@@ -193,7 +193,7 @@ def test_ingest_concurrency_ordering(wiki_dir: Path, monkeypatch):
     from lib.config import WikiConfig
     monkeypatch.setattr("lib.wiki_ops.load_wiki_config", lambda d: WikiConfig(
         domain_name="test",
-        ingest_settings={"chunk_strategy": "headers", "chunk_max_tokens": 5}
+        ingest_settings={"chunk_strategy": "headers", "chunk_max_tokens": 10}
     ))
     
     import asyncio
