@@ -59,7 +59,11 @@ def find_providers_config(start_path: Optional[Path] = None) -> Optional[Path]:
     """Search for providers.yaml in prioritized locations."""
     candidates = []
 
-    # 1. Start path or current directory
+    # 1. User home config (highest priority for real credentials)
+    home_config = Path.home() / ".config" / "llm-wiki" / "providers.yaml"
+    candidates.append(home_config)
+
+    # 2. Start path or current directory
     if start_path:
         candidates.append(start_path / "providers.yaml")
         candidates.append(start_path / "config" / "providers.yaml")
@@ -67,10 +71,6 @@ def find_providers_config(start_path: Optional[Path] = None) -> Optional[Path]:
     cwd = Path.cwd()
     candidates.append(cwd / "providers.yaml")
     candidates.append(cwd / "config" / "providers.yaml")
-
-    # 2. User home config
-    home_config = Path.home() / ".config" / "llm-wiki" / "providers.yaml"
-    candidates.append(home_config)
 
     # 3. Default toolkit directory
     toolkit_dir = Path(__file__).resolve().parent.parent
