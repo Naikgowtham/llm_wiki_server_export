@@ -57,7 +57,7 @@ class WikiVectorStore:
             metadatas=[metadata]
         )
 
-    def search_similar(self, text: str, k: int = 10, distance_threshold: float = 0.4) -> List[str]:
+    def search_similar(self, text: str, k: int = 10, distance_threshold: float = 0.4, min_results: int = 0) -> List[str]:
         """
         Finds the most semantically similar documents in the wiki to the given text.
         Filters results dynamically based on a distance threshold.
@@ -66,6 +66,7 @@ class WikiVectorStore:
             text: The text to search for
             k: Maximum number of documents to retrieve
             distance_threshold: Maximum allowable distance (lower is closer)
+            min_results: Minimum floor of results to return regardless of distance (default: 0)
             
         Returns:
             List of raw markdown document strings that passed the threshold.
@@ -87,14 +88,13 @@ class WikiVectorStore:
             
             # Zip documents and their cosine distances together
             for doc, dist in zip(docs, distances):
-                # If the semantic distance is below the threshold, it's highly related!
-                # We always want at least 2 documents for context, even if they fail threshold.
-                if dist < distance_threshold or len(valid_docs) < 2:
+                # If semantic distance is below threshold, or if under the configured min_results floor
+                if dist < distance_threshold or len(valid_docs) < min_results:
                     valid_docs.append(doc)
                     
         return valid_docs
                     
-    def search_similar_with_metadata(self, text: str, k: int = 10, distance_threshold: float = 0.4) -> List[Dict[str, Any]]:
+    def search_similar_with_metadata(self, text: str, k: int = 10, distance_threshold: float = 0.4, min_results: int = 0) -> List[Dict[str, Any]]:
         """Finds similar documents and returns their metadata, ids, and content."""
         embedding = self.provider.embed(text)
         if not embedding:
@@ -114,7 +114,7 @@ class WikiVectorStore:
             ids = results["ids"][0]
             
             for doc, dist, meta, id_ in zip(docs, distances, metadatas, ids):
-                if dist < distance_threshold or len(valid_docs) < 2:
+                if dist < distance_threshold or len(valid_docs) < min_results:
                     valid_docs.append({
                         "path": id_,
                         "title": meta.get("title", "Untitled"),
