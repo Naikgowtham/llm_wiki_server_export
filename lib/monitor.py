@@ -358,6 +358,11 @@ def check_journal_logs(
         re.compile(r"quarantined", re.IGNORECASE),
     ]
 
+    ignored_patterns = [
+        # Benign ASGI stream disconnect during graceful server shutdown while SSE was open
+        re.compile(r"Expected ASGI message 'http\.response\.body', but got 'http\.response\.start'", re.IGNORECASE),
+    ]
+
     for svc in services:
         try:
             cmd = [
@@ -365,6 +370,7 @@ def check_journal_logs(
                 "--user",
                 "-u",
                 svc,
+                "-b",
                 f"--since=-{since_seconds}s",
                 "--no-pager",
             ]
@@ -375,6 +381,10 @@ def check_journal_logs(
             while i < len(lines):
                 line = lines[i]
 
+                if any(ign.search(line) for ign in ignored_patterns):
+                    i += 1
+                    continue
+
                 # Traceback capture (multi-line)
                 if "Traceback (most recent call last):" in line:
                     tb_chunk = [line]
@@ -384,6 +394,12 @@ def check_journal_logs(
                         if not lines[j].startswith(" ") and not lines[j].startswith("\t") and len(tb_chunk) > 2:
                             break
                         j += 1
+
+                    # Skip traceback if it's an ignored benign error
+                    if any(any(ign.search(chunk_l) for ign in ignored_patterns) for chunk_l in tb_chunk):
+                        i = max(i + 1, j)
+                        continue
+
                     error_snippet = "\n".join(tb_chunk[:15])
                     errors_found.append({
                         "service": svc,
@@ -471,6 +487,14 @@ class MonitorRunner:
             self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
         except Exception as e:
             logger.error("Failed saving monitor state: %s", e)
+
+    def clear_incidents(self):
+        """Manually clear all active incidents and reset state to operational."""
+        state = self.load_state()
+        state["active_incidents"] = {}
+        self.save_state(state)
+        # Re-run check without sending alerts to refresh the report
+        return self.run_check(send_alerts=False)
 
     def run_check(self, since_seconds: int = 300, send_alerts: bool = True) -> Dict[str, Any]:
         """Execute one full diagnostic evaluation cycle."""
@@ -576,8 +600,10 @@ class MonitorRunner:
                 })
 
         # 5. Evaluate Log Errors & Tracebacks
+        current_error_hashes = set()
         for err in logs_data["errors"]:
             err_hash = f"err_{abs(hash(err['summary'])) % 10000000}"
+            current_error_hashes.add(err_hash)
             inc = {
                 "id": err_hash,
                 "type": "log_error",
@@ -586,11 +612,26 @@ class MonitorRunner:
                 "title": f"Server Crash/Error in {err['service']}",
                 "description": f"**{err['summary']}**\n```\n{err['snippet'][:1500]}\n```",
                 "timestamp": now_str,
+                "last_seen_epoch": time.time(),
             }
             # Only alert on new error hashes
             if err_hash not in active_incidents:
                 new_incidents.append(inc)
-                active_incidents[err_hash] = inc
+            active_incidents[err_hash] = inc
+
+        # Auto-resolve log errors that haven't reoccurred within 15 minutes (900s)
+        now_epoch = time.time()
+        for inc_id, inc in list(active_incidents.items()):
+            if inc.get("type") == "log_error":
+                last_seen = inc.get("last_seen_epoch", 0)
+                if inc_id not in current_error_hashes and (now_epoch - last_seen > 900 or last_seen == 0):
+                    resolved_inc = active_incidents.pop(inc_id)
+                    recoveries.append({
+                        "id": inc_id,
+                        "title": f"Error Cleared: {resolved_inc.get('title', inc_id)}",
+                        "description": f"No further occurrences of error in `{resolved_inc.get('service', 'service')}`. System healthy and stable.",
+                        "timestamp": now_str,
+                    })
 
         # 6. Evaluate Disk Usage (>90%)
         if vaults_data["disk"]["used_percent"] >= 90.0:

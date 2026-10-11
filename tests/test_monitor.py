@@ -298,3 +298,61 @@ def test_cli_monitor_commands(tmp_path: Path):
         res_report = runner.invoke(monitor_cmd, ["report", "-r", str(report_p)])
         assert res_report.exit_code == 0
         assert "Test Report Content" in res_report.output
+
+        # Test clear command
+        res_clear = runner.invoke(monitor_cmd, ["clear"])
+        assert res_clear.exit_code == 0
+        assert "Active incidents cleared" in res_clear.output
+
+
+def test_check_journal_logs_ignores_benign_shutdown_asgi_error():
+    """Verify that benign ASGI response start disconnection errors during graceful shutdown are ignored."""
+    mock_journal = (
+        "Oct 10 10:01:33 app-server wiki[1059159]: INFO: Shutting down\n"
+        "Oct 10 10:01:33 app-server wiki[1059159]: Traceback (most recent call last):\n"
+        "Oct 10 10:01:33 app-server wiki[1059159]:   File 'httptools_impl.py', line 529, in send\n"
+        "Oct 10 10:01:33 app-server wiki[1059159]: RuntimeError: Expected ASGI message 'http.response.body', but got 'http.response.start'.\n"
+        "Oct 10 10:01:33 app-server wiki[1059159]: INFO: Application shutdown complete.\n"
+    )
+    with patch("subprocess.run", return_value=MagicMock(stdout=mock_journal)):
+        res = check_journal_logs(services=["llm-wiki-router.service"], since_seconds=300)
+        assert len(res["errors"]) == 0  # Ignored as benign shutdown artifact
+
+
+def test_monitor_runner_auto_resolves_stale_log_errors(tmp_path: Path):
+    """Test that log_error incidents auto-resolve when no longer occurring."""
+    state_file = tmp_path / "state.json"
+    report_file = tmp_path / "report.md"
+    runner = MonitorRunner(wikis_dir=tmp_path, state_file=state_file, report_file=report_file)
+
+    # Initial state with an old log_error
+    import time
+    old_epoch = time.time() - 1000  # >900s ago
+    runner.save_state({
+        "last_check": "yesterday",
+        "services": {"llm-wiki-router.service": "running"},
+        "active_incidents": {
+            "err_123": {
+                "id": "err_123",
+                "type": "log_error",
+                "severity": "critical",
+                "service": "llm-wiki-router.service",
+                "title": "Old Error",
+                "last_seen_epoch": old_epoch,
+            }
+        },
+        "history": []
+    })
+
+    with patch("lib.monitor.check_systemd_services", return_value=[
+        {"name": "llm-wiki-router.service", "status": "running", "active": True, "substate": "running", "pid": 10, "memory_mb": 50, "uptime": "now"}
+    ]), patch("lib.monitor.check_http_endpoint", return_value={
+        "reachable": True, "status_code": 200, "latency_ms": 1.0, "url": "http://u", "error": None
+    }), patch("lib.monitor.check_journal_logs", return_value={"errors": [], "warnings": []}):
+
+        res = runner.run_check(send_alerts=False)
+        assert res["healthy"] is True
+        assert res["active_incidents_count"] == 0
+        assert len(res["recoveries"]) == 1
+        assert "err_123" not in runner.load_state()["active_incidents"]
+

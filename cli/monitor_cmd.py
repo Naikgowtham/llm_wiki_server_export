@@ -134,6 +134,15 @@ def report_cmd(report_file: str):
     console.print(p.read_text(encoding="utf-8"))
 
 
+@monitor_cmd.command("clear")
+@click.option("--base-dir", "-b", default=str(DEFAULT_WIKIS_DIR), type=click.Path(), help="Base directory containing wiki vaults.")
+def clear_cmd(base_dir: str):
+    """Clear all active incidents and reset monitor dashboard to operational."""
+    runner = MonitorRunner(wikis_dir=Path(base_dir))
+    runner.clear_incidents()
+    console.print("[bold green]✔ Active incidents cleared. Monitor dashboard reset to All Systems Operational.[/bold green]")
+
+
 @monitor_cmd.command("test-alert")
 def test_alert_cmd():
     """Send a test notification to the user's Discord home channel."""
