@@ -137,8 +137,10 @@ def test_table_aware_chunking_via_split_document():
         assert any("|---|" in line for line in lines), "Table sub-chunk missing delimiter row"
 
 
-@pytest.mark.asyncio
-async def test_enrich_markdown_with_vision_success(tmp_path):
+import asyncio
+
+
+def test_enrich_markdown_with_vision_success(tmp_path):
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()
     img_file = assets_dir / "diagram.png"
@@ -160,22 +162,21 @@ async def test_enrich_markdown_with_vision_success(tmp_path):
         "| 1 | 12ms |"
     )
 
-    enriched = await enrich_markdown_with_vision(
+    enriched = asyncio.run(enrich_markdown_with_vision(
         markdown_text=markdown_text,
         assets_dir=assets_dir,
         valid_image_names={"diagram.png"},
         source_filename="paper.pdf",
         doc_slug="paper",
         provider=mock_provider,
-    )
+    ))
 
     assert "[!FIGURE: diagram.png]" in enriched
     assert "Shows latency improvement" in enriched
     assert "| Batch | Latency |" in enriched
 
 
-@pytest.mark.asyncio
-async def test_enrich_markdown_with_vision_soft_fallback_on_exhaustion(tmp_path):
+def test_enrich_markdown_with_vision_soft_fallback_on_exhaustion(tmp_path):
     """Asserts that when vision models are exhausted (call_vision returns None), ingestion does NOT crash."""
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()
@@ -192,14 +193,14 @@ async def test_enrich_markdown_with_vision_soft_fallback_on_exhaustion(tmp_path)
     # Simulate vision quota exhaustion returning None
     mock_provider.call_vision.return_value = None
 
-    enriched = await enrich_markdown_with_vision(
+    enriched = asyncio.run(enrich_markdown_with_vision(
         markdown_text=markdown_text,
         assets_dir=assets_dir,
         valid_image_names={"diagram.png"},
         source_filename="paper.pdf",
         doc_slug="paper",
         provider=mock_provider,
-    )
+    ))
 
     # Should retain clean image reference without crashing or throwing
     assert "![Figure: diagram.png](assets/paper/diagram.png)" in enriched
@@ -207,8 +208,7 @@ async def test_enrich_markdown_with_vision_soft_fallback_on_exhaustion(tmp_path)
     assert "[!FIGURE:" not in enriched
 
 
-@pytest.mark.asyncio
-async def test_process_pdf_source_end_to_end(tmp_path):
+def test_process_pdf_source_end_to_end(tmp_path):
     # Create synthetic PDF
     pdf_path = tmp_path / "sample.pdf"
     doc = pymupdf.open()
@@ -226,11 +226,11 @@ async def test_process_pdf_source_end_to_end(tmp_path):
     vault_dir = tmp_path / "test-vault"
     vault_dir.mkdir()
 
-    result = await process_pdf_source(
+    result = asyncio.run(process_pdf_source(
         pdf_path=pdf_path,
         wiki_dir=vault_dir,
         provider=None, # Text-only fallback
-    )
+    ))
 
     assert "Research Paper Title" in result
     assert "| Method | Score |" in result

@@ -279,4 +279,63 @@ def test_stream_completion(monkeypatch):
     assert output == "Hello world!"
 
 
+def test_resolve_operation_max_tokens():
+    """Verify max_tokens ceilings for Groq free-tier and standard providers."""
+    from lib.providers import resolve_operation_max_tokens
+
+    # Groq Qwen models must stay <= 1000 OTPM ceiling
+    assert resolve_operation_max_tokens("groq 2/qwen/qwen3.8-27b", "groq/qwen3.8-27b", "lint_audit") <= 950
+    assert resolve_operation_max_tokens("groq 3/qwen/qwen3.8-27b", "groq/qwen3.8-27b", "ingest_synth") <= 950
+
+    # Other Groq models
+    assert resolve_operation_max_tokens("groq 2/openai/gpt-oss-120b", "groq/gpt-oss-120b", "lint_audit") == 1024
+    assert resolve_operation_max_tokens("groq 2/openai/gpt-oss-20b", "groq/gpt-oss-20b", "ingest_extract") == 2048
+
+    # Non-Groq models
+    assert resolve_operation_max_tokens("google-2/gemini-3.8-flash", "gemini/gemini-3.8-flash", "ingest_synth") == 8192
+    assert resolve_operation_max_tokens("google-2/gemini-3.8-flash", "gemini/gemini-3.8-flash", "vision") == 3072
+
+
+def test_compute_rate_limit_cooldown():
+    """Verify smart rate limit cooldown detection distinguishing minute bursts from daily limits."""
+    from lib.providers import compute_rate_limit_cooldown
+
+    # 1. Gemini transient per-minute throttle with 33s retryDelay
+    gemini_minute_err = Exception(
+        'litellm.RateLimitError: {"error": {"code": 429, "message": "You exceeded your current quota. Please retry in 33.2s.", "details": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}, {"retryDelay": "33s"}]}}'
+    )
+    is_rl, cooldown = compute_rate_limit_cooldown(gemini_minute_err)
+    assert is_rl is True
+    assert 30.0 <= cooldown <= 40.0  # ~35s, NEVER 3600s!
+
+    # 2. Gemini daily quota exhaustion with 10h retry
+    gemini_daily_err = Exception(
+        'litellm.RateLimitError: {"error": {"code": 429, "message": "You exceeded your current quota. Please retry in 10h27m.", "details": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}, {"retryDelay": "37630s"}]}}'
+    )
+    is_rl, cooldown = compute_rate_limit_cooldown(gemini_daily_err)
+    assert is_rl is True
+    assert cooldown == 3600.0
+
+    # 3. Groq TPM limit with 26.9s retry
+    groq_tpm_err = Exception(
+        'Rate limit reached on TPM: Limit 8000, Used 6470. Please try again in 26.9s.'
+    )
+    is_rl, cooldown = compute_rate_limit_cooldown(groq_tpm_err)
+    assert is_rl is True
+    assert 25.0 <= cooldown <= 35.0
+
+    # 4. 503 high demand spike
+    spike_err = Exception("503 GeminiException: This model is currently experiencing high demand.")
+    is_rl, cooldown = compute_rate_limit_cooldown(spike_err)
+    assert is_rl is True
+    assert cooldown == 60.0
+
+    # 5. Non-rate limit error
+    syntax_err = ValueError("Invalid input format")
+    is_rl, cooldown = compute_rate_limit_cooldown(syntax_err)
+    assert is_rl is False
+    assert cooldown == 0.0
+
+
+
 

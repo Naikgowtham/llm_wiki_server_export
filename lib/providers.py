@@ -77,6 +77,87 @@ class RateLimitCooldownTracker:
         return short_cooldown
 
 
+def resolve_operation_max_tokens(model_id: str, clean_model: str, operation: str) -> int:
+    """Compute an appropriate max_tokens ceiling preventing provider rate limit errors (e.g. Groq OTPM/TPM ceilings)."""
+    m_lower = (model_id + " " + clean_model).lower()
+    is_groq = "groq" in m_lower
+    is_qwen = "qwen" in m_lower
+
+    if is_groq and is_qwen:
+        # Groq on-demand free tier enforces 1,000 Output Tokens Per Minute (OTPM) on Qwen models.
+        # Setting max_tokens <= 1000 prevents "Request too large ... on output tokens per minute"
+        return 900
+    elif is_groq:
+        if operation == "lint_audit":
+            return 1024
+        elif operation in ("ingest_extract", "ingest_crossref"):
+            return 2048
+        else:
+            return 4096
+    else:
+        if operation == "lint_audit":
+            return 2048
+        elif operation in ("ingest_extract", "ingest_crossref", "vision"):
+            return 3072
+        else:
+            return 8192
+
+
+def compute_rate_limit_cooldown(err: Exception) -> Tuple[bool, float]:
+    """Determine if an exception represents a rate limit or service spike, and compute appropriate cooldown."""
+    err_str = str(err).lower()
+    is_throttled = (
+        "rate_limit" in err_str
+        or "rate limit" in err_str
+        or "ratelimit" in err_str
+        or "429" in err_str
+        or "resource_exhausted" in err_str
+        or "quota" in err_str
+        or "503" in err_str
+        or "high demand" in err_str
+        or "temporarily unavailable" in err_str
+        or "tpm" in err_str
+        or "rpm" in err_str
+        or "otpm" in err_str
+    )
+    if not is_throttled:
+        return False, 0.0
+
+    compact_err = err_str.replace(" ", "").replace("_", "").replace("-", "")
+
+    # 1. Check for explicit retry-after seconds in error string
+    # e.g., "retry in 33.2s", "retrydelay: 33s", "please try again in 27.975s", "retrydelay: 37630s"
+    import re
+    sec_match = re.search(r'(?:(?:retry(?:delay)?|try\s+again)(?:\s+in)?[:\s"\']+)(\d+(?:\.\d+)?)\s*s', err_str)
+    if sec_match:
+        delay_sec = float(sec_match.group(1))
+        # If the delay is thousands of seconds (> 300s), it's a daily limit!
+        if delay_sec > 300.0:
+            return True, 3600.0
+        # Otherwise it's a short per-minute limit!
+        return True, max(15.0, min(delay_sec + 2.0, 120.0))
+
+    # 2. Check for retry in hours/minutes: e.g. "retry in 10h27m"
+    hour_match = re.search(r'retry\s+in\s+(\d+)h', err_str)
+    if hour_match or "perday" in compact_err or "daily" in err_str:
+        return True, 3600.0
+
+    # 3. Check for per-minute rate limits (Groq TPM/RPM/OTPM, Gemini PerMinute)
+    if "perminute" in compact_err or "tpm" in err_str or "rpm" in err_str or "otpm" in err_str:
+        return True, 60.0
+
+    # 4. Check for true daily exhaustion indicators
+    if "free allocation" in err_str or ("exceeded your current quota" in err_str and ("day" in err_str or "hour" in err_str)):
+        return True, 3600.0
+
+    # 5. Service unavailable (503) or transient high demand
+    if "503" in err_str or "high demand" in err_str or "temporarily unavailable" in err_str:
+        return True, 60.0
+
+    # Default fallback cooldown for general 429
+    return True, 60.0
+
+
 class LLMProvider:
     """Manages LLM completions across multiple providers and handles automatic failover."""
 
@@ -210,7 +291,7 @@ class LLMProvider:
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
-                    "max_tokens": 8192,
+                    "max_tokens": resolve_operation_max_tokens(model_id, clean_model, operation),
                     "timeout": op_timeout,
                 }
 
@@ -244,17 +325,8 @@ class LLMProvider:
                         time.sleep(2 ** attempt)
 
             except Exception as e:
-                err_str = str(e).lower()
-                is_rate_limit = (
-                    "rate_limit" in err_str
-                    or "429" in err_str
-                    or "resource_exhausted" in err_str
-                    or "quota" in err_str
-                )
-
+                is_rate_limit, cooldown = compute_rate_limit_cooldown(e)
                 if is_rate_limit:
-                    is_daily = "daily" in err_str or "free allocation" in err_str or "exceeded your current quota" in err_str
-                    cooldown = 3600.0 if is_daily else 60.0
                     RateLimitCooldownTracker.mark_cooling_down(model_id, cooldown_seconds=cooldown)
                     self.rate_limits.append({
                         "model": model_id,
@@ -483,7 +555,7 @@ class LLMProvider:
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
-                    "max_tokens": 8192,
+                    "max_tokens": resolve_operation_max_tokens(model_id, clean_model, operation),
                     "timeout": op_timeout,
                 }
 
@@ -517,19 +589,8 @@ class LLMProvider:
                         await asyncio.sleep(2 ** attempt)
 
             except Exception as e:
-                err_str = str(e).lower()
-                is_rate_limit = (
-                    "rate_limit" in err_str
-                    or "429" in err_str
-                    or "resource_exhausted" in err_str
-                    or "quota" in err_str
-                    or "503" in err_str
-                    or "high demand" in err_str
-                    or "temporarily unavailable" in err_str
-                )
+                is_rate_limit, cooldown = compute_rate_limit_cooldown(e)
                 if is_rate_limit:
-                    is_daily = "daily" in err_str or "free allocation" in err_str or "exceeded your current quota" in err_str
-                    cooldown = 3600.0 if is_daily else 60.0
                     RateLimitCooldownTracker.mark_cooling_down(model_id, cooldown_seconds=cooldown)
                     self.rate_limits.append({
                         "model": model_id,
@@ -597,7 +658,7 @@ class LLMProvider:
                     "model": clean_model,
                     "messages": messages,
                     "temperature": 1.0 if "gemini-3" in clean_model else temperature,
-                    "max_tokens": 8192,
+                    "max_tokens": resolve_operation_max_tokens(model_id, clean_model, operation),
                     "timeout": 30,
                     "stream": True,
                 }

@@ -285,14 +285,22 @@ def append_to_log(wiki_dir: Path, operation: str, title: str, details: List[str]
 
 
 def commit_if_git(wiki_dir: Path, message: str) -> bool:
-    """Perform a git commit in the wiki directory if git is initialized."""
+    """Perform a git commit in the wiki directory if git is initialized.
+
+    Uses skip_hooks=True / --no-verify so that automated daemon commits are not aborted
+    by interactive developer pre-commit micro-lint hooks.
+    """
     try:
         import git
         repo = git.Repo(wiki_dir)
         repo.git.add(A=True)
-        repo.index.commit(message)
+        try:
+            repo.index.commit(message, skip_hooks=True)
+        except Exception:
+            repo.git.commit("-m", message, "--no-verify")
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to auto-commit wiki changes in %s: %s", wiki_dir, e)
         return False
 
 

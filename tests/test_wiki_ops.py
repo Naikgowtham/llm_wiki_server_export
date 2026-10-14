@@ -364,3 +364,33 @@ def test_run_lint_auto_fix(wiki_dir: Path, monkeypatch):
     assert page.read_text(encoding="utf-8").find("tags: [fixed]") != -1
 
 
+def test_commit_if_git_bypasses_hooks(tmp_path):
+    """Verify commit_if_git bypasses pre-commit hooks so daemon ingestion is not aborted."""
+    import git
+    from lib.wiki_ops import commit_if_git
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    repo = git.Repo.init(repo_dir)
+
+    # Configure committer
+    repo.config_writer().set_value("user", "name", "Tester").release()
+    repo.config_writer().set_value("user", "email", "tester@example.com").release()
+
+    # Create a failing pre-commit hook
+    hooks_dir = repo_dir / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    # Create dummy file
+    (repo_dir / "file.txt").write_text("content", encoding="utf-8")
+
+    # commit_if_git must succeed despite failing hook
+    res = commit_if_git(repo_dir, "test commit bypassing hook")
+    assert res is True
+    assert repo.head.commit.message.strip() == "test commit bypassing hook"
+
+
+
