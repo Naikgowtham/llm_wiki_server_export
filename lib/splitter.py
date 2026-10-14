@@ -18,6 +18,66 @@ class Chunk:
     token_count: int = 0
 
 
+def is_markdown_table(text: str) -> bool:
+    """Check if a text block represents a GitHub Flavored Markdown (GFM) table."""
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    # Case 1: Standard table starting at line 0
+    if lines[0].startswith("|") and lines[0].endswith("|"):
+        if lines[1].startswith("|") and all(c in "|:- \t" for c in lines[1]) and "-" in lines[1]:
+            return True
+    # Case 2: Optional 1-line caption immediately before table
+    if len(lines) >= 3 and lines[1].startswith("|") and lines[1].endswith("|"):
+        if lines[2].startswith("|") and all(c in "|:- \t" for c in lines[2]) and "-" in lines[2]:
+            return True
+    return False
+
+
+def split_table_with_header_continuity(table_text: str, max_tokens: int) -> List[str]:
+    """Split an oversized markdown table into row-aligned chunks while repeating headers on each sub-chunk.
+
+    Guarantees that downstream LLM extractors never receive headless rows.
+    """
+    lines = [line.strip() for line in table_text.strip().splitlines() if line.strip()]
+    if len(lines) < 2:
+        return [table_text]
+
+    if lines[0].startswith("|"):
+        caption = ""
+        header = lines[0]
+        delimiter = lines[1]
+        data_rows = lines[2:]
+    else:
+        caption = lines[0]
+        header = lines[1]
+        delimiter = lines[2]
+        data_rows = lines[3:]
+
+    header_prefix = f"{caption}\n{header}\n{delimiter}".strip() if caption else f"{header}\n{delimiter}"
+    chunks: List[str] = []
+    current_rows: List[str] = []
+
+    for row in data_rows:
+        candidate = (
+            (header_prefix + "\n" + "\n".join(current_rows) + "\n" + row)
+            if current_rows
+            else (header_prefix + "\n" + row)
+        )
+        if count_tokens_approx(candidate) > max_tokens and current_rows:
+            chunk_body = header_prefix + "\n" + "\n".join(current_rows)
+            chunks.append(chunk_body)
+            current_rows = [row]
+        else:
+            current_rows.append(row)
+
+    if current_rows:
+        chunk_body = header_prefix + "\n" + "\n".join(current_rows)
+        chunks.append(chunk_body)
+
+    return chunks
+
+
 def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]:
     """Split markdown text into sections demarcated by headers (#, ##, ###).
 
@@ -68,12 +128,19 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
         if count_tokens_approx(clean) <= max_tokens:
             refined_sections.append((clean, hdrs))
         else:
-            # Subdivide oversized block with sliding window
-            overlap = min(100, max_tokens // 10)
-            sub_chunks = _split_fixed_size(clean, max_tokens, overlap)
-            for sub_txt, _ in sub_chunks:
-                if sub_txt.strip():
-                    refined_sections.append((sub_txt.strip(), hdrs))
+            # Check if this oversized block is a markdown table
+            if is_markdown_table(clean):
+                table_chunks = split_table_with_header_continuity(clean, max_tokens)
+                for tc in table_chunks:
+                    if tc.strip():
+                        refined_sections.append((tc.strip(), hdrs))
+            else:
+                # Subdivide oversized block with sliding window
+                overlap = min(100, max_tokens // 10)
+                sub_chunks = _split_fixed_size(clean, max_tokens, overlap)
+                for sub_txt, _ in sub_chunks:
+                    if sub_txt.strip():
+                        refined_sections.append((sub_txt.strip(), hdrs))
 
     # Second pass: bundle tiny sections together up to max_tokens, or split oversized ones
     refined_sections: List[tuple[str, List[str]]] = []

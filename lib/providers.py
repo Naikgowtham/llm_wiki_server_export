@@ -200,6 +200,8 @@ class LLMProvider:
 
                 if operation in ("ingest_synth", "lint_fix") or "nous" in clean_model or "nous" in model_id:
                     op_timeout = 180
+                elif operation == "vision":
+                    op_timeout = 90
                 elif "cloudflare" in clean_model:
                     op_timeout = 60
                 else:
@@ -269,6 +271,75 @@ class LLMProvider:
         raise LLMProviderError(
             f"All models in fallback chain for operation '{operation}' failed. Last error: {last_error}"
         )
+
+    def call_vision(
+        self,
+        image_path: Path,
+        prompt: str,
+        operation: str = "vision",
+        override_model: Optional[str] = None,
+    ) -> Optional[str]:
+        """Execute a multimodal completion on an image with automatic provider failover.
+
+        Graceful non-blocking fallback:
+        If all models in the vision chain fail or are cooling down, logs a warning
+        and returns None instead of raising an exception, allowing text compilation to proceed uninterrupted.
+        """
+        import base64
+        import mimetypes
+        from pathlib import Path
+
+        img = Path(image_path)
+        if not img.is_file():
+            logger.warning("Vision call skipped: Image file not found at %s", img)
+            return None
+
+        mime_type, _ = mimetypes.guess_type(str(img))
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/png"
+
+        try:
+            b64_data = base64.b64encode(img.read_bytes()).decode("utf-8")
+        except Exception as e:
+            logger.warning("Failed to read image bytes for %s: %s", img, e)
+            return None
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{b64_data}"
+                        },
+                    },
+                ],
+            }
+        ]
+
+        try:
+            return self.call(
+                messages=messages,
+                operation=operation,
+                temperature=0.2,
+                override_model=override_model,
+            )
+        except LLMProviderError as e:
+            logger.warning(
+                "All vision models exhausted or cooling down for %s: %s. Degrading gracefully.",
+                img.name,
+                e,
+            )
+            return None
+        except Exception as e:
+            logger.warning(
+                "Unexpected vision completion error for %s: %s. Degrading gracefully.",
+                img.name,
+                e,
+            )
+            return None
 
     def embed(self, text: str) -> Optional[List[float]]:
         """Generate embeddings using the fallback chain configured for 'embeddings'."""

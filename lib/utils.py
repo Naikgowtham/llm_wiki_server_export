@@ -67,12 +67,18 @@ def render_frontmatter(frontmatter: Dict[str, Any], body: str) -> str:
 def extract_wikilinks(content: str) -> List[str]:
     """Extract all [[target]] or [[target|label]] links from markdown content.
 
-    Returns list of target names (unlabeled).
+    Excludes embedded images/media (![[...]]) and links pointing to image/media assets.
+    Returns list of target note names (unlabeled).
     """
-    pattern = r"\[\[([^\[\]|\n]+)(?:\|[^\[\]\n]+)?\]\]"
+    pattern = r"(?<!!)\[\[([^\[\]|\n]+)(?:\|[^\[\]\n]+)?\]\]"
     matches = re.findall(pattern, content)
-    # Strip whitespace and normalize
-    return [m.strip() for m in matches if m.strip()]
+    media_extensions = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".mp4", ".mp3"}
+    valid_links = []
+    for m in matches:
+        target = m.strip()
+        if target and Path(target).suffix.lower() not in media_extensions:
+            valid_links.append(target)
+    return valid_links
 
 
 def extract_source_citations(content: str) -> List[str]:
@@ -108,7 +114,7 @@ def build_link_graph(wiki_dir: Path) -> Dict[str, Set[str]]:
         return graph
 
     for md_file in wiki_dir.rglob("*.md"):
-        if ".llm-wiki" in md_file.parts:
+        if ".llm-wiki" in md_file.parts or "assets" in md_file.parts:
             continue
         try:
             content = md_file.read_text(encoding="utf-8")

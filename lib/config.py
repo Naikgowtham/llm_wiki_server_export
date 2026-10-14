@@ -21,7 +21,7 @@ class ProvidersConfig:
         if operation in self.fallback_chain:
             return self.fallback_chain[operation]
         # Generic default if specific operation not mapped
-        for op in ("query", "ingest", "lint", "embeddings"):
+        for op in ("query", "ingest", "lint", "embeddings", "vision"):
             if op in self.fallback_chain:
                 return self.fallback_chain[op]
         return ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"]

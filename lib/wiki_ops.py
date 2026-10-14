@@ -395,10 +395,20 @@ async def run_ingest(
         provider = LLMProvider()
 
     config = load_wiki_config(wiki_dir)
-    source_content = read_source_file(source_file)
     source_filename = source_file.name
     source_slug = slugify(source_file.stem)
     today = today_str()
+
+    if source_file.suffix.lower() == ".pdf":
+        from lib.pdf_processor import process_pdf_source
+        source_content = await process_pdf_source(
+            pdf_path=source_file,
+            wiki_dir=wiki_dir,
+            provider=provider,
+            domain_name=config.domain_name,
+        )
+    else:
+        source_content = read_source_file(source_file)
 
     logger.info("Splitting source %s...", source_filename)
     
@@ -974,7 +984,7 @@ async def run_lint(
 
     page_titles: Dict[str, str] = {}
     for md in (wiki_dir / "wiki").rglob("*.md"):
-        if ".llm-wiki" in md.parts:
+        if ".llm-wiki" in md.parts or "assets" in md.parts:
             continue
         all_pages.add(md.stem)
         try:
@@ -988,7 +998,7 @@ async def run_lint(
     dangling_sources: List[str] = []
     frontmatter_issues: List[str] = []
     for md in (wiki_dir / "wiki").rglob("*.md"):
-        if ".llm-wiki" in md.parts:
+        if ".llm-wiki" in md.parts or "assets" in md.parts:
             continue
         if md.name in ("index.md", "log.md", "overview.md") or md.name.endswith("_MOC.md"):
             continue
