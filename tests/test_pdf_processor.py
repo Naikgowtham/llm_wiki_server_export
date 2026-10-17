@@ -9,6 +9,7 @@ from lib.pdf_processor import (
     filter_extracted_images,
     cleanup_markdown_image_tags,
     enrich_markdown_with_vision,
+    ocr_scanned_pdf,
     process_pdf_source,
 )
 from lib.splitter import (
@@ -235,3 +236,70 @@ def test_process_pdf_source_end_to_end(tmp_path):
     assert "Research Paper Title" in result
     assert "| Method | Score |" in result
     assert "| Model A | 98.4 |" in result
+
+
+def test_process_pdf_source_ocr_fallback_on_scanned_pdf(tmp_path):
+    """Asserts that a scanned PDF with no selectable text triggers vision OCR fallback."""
+    import asyncio
+    pdf_path = tmp_path / "scanned_exam.pdf"
+    doc = pymupdf.open()
+    # Create a page with purely visual graphic (no text inserted)
+    page = doc.new_page(width=400, height=500)
+    page.draw_rect((20, 20, 380, 480), fill=(0.9, 0.9, 0.9))
+    doc.save(str(pdf_path))
+    doc.close()
+
+    mock_provider = MagicMock()
+    mock_provider.call_vision.return_value = (
+        "## Transcribed Exam Section\n\n"
+        "1. What is the primary purpose of Two-Phase Locking (2PL)?\n"
+        "(a) Deadlock prevention\n"
+        "(b) Conflict serializability\n\n"
+        "| Question | Max Marks |\n"
+        "|---|---|\n"
+        "| Q1 | 5 |"
+    )
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+
+    result = asyncio.run(process_pdf_source(
+        pdf_path=pdf_path,
+        wiki_dir=vault_dir,
+        provider=mock_provider,
+        domain_name="Exam Wiki",
+    ))
+
+    assert "<!-- Page 1 -->" in result
+    assert "Two-Phase Locking (2PL)" in result
+    assert "Conflict serializability" in result
+    assert "| Question | Max Marks |" in result
+    assert mock_provider.call_vision.called
+
+
+def test_process_pdf_source_ocr_fallback_exhaustion(tmp_path):
+    """Asserts that if vision calls return None for a scanned PDF, it degrades gracefully without crashing."""
+    import asyncio
+    pdf_path = tmp_path / "scanned_blank.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=500)
+    page.draw_rect((20, 20, 380, 480), fill=(0.9, 0.9, 0.9))
+    doc.save(str(pdf_path))
+    doc.close()
+
+    mock_provider = MagicMock()
+    mock_provider.call_vision.return_value = None
+
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+
+    result = asyncio.run(process_pdf_source(
+        pdf_path=pdf_path,
+        wiki_dir=vault_dir,
+        provider=mock_provider,
+        domain_name="Exam Wiki",
+    ))
+
+    # Should gracefully return empty or cleaned string without exception
+    assert isinstance(result, str)
+

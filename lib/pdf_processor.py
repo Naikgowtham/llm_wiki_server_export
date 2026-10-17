@@ -195,6 +195,102 @@ async def enrich_markdown_with_vision(
     return re.sub(r"\n{3,}", "\n\n", cleaned_md)
 
 
+async def ocr_scanned_pdf(
+    pdf_path: Path,
+    assets_dir: Path,
+    provider: Any,
+    domain_name: str = "Knowledge Wiki",
+    source_filename: Optional[str] = None,
+    max_pages: int = 50,
+) -> str:
+    """Fallback OCR pipeline for scanned/rasterized PDFs using multimodal vision.
+
+    Renders each PDF page to a high-resolution PNG image and transcribes it
+    verbatim into structured Markdown using the active vision model.
+    """
+    if not provider or not hasattr(provider, "call_vision"):
+        return ""
+
+    src_name = source_filename or pdf_path.name
+    ocr_dir = assets_dir / "ocr_pages"
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+
+    loop = asyncio.get_running_loop()
+
+    def _render_all_pages() -> List[Tuple[int, Path, int]]:
+        doc = pymupdf.open(str(pdf_path))
+        total = len(doc)
+        limit = min(total, max_pages)
+        pages_to_ocr = []
+        for i in range(limit):
+            page = doc[i]
+            # 150 DPI provides clear OCR rendering for text & tables without excessive payload size
+            pix = page.get_pixmap(dpi=150)
+            page_img_path = ocr_dir / f"page_{i + 1}.png"
+            pix.save(str(page_img_path))
+            pages_to_ocr.append((i + 1, page_img_path, total))
+        doc.close()
+        return pages_to_ocr
+
+    rendered_pages = await loop.run_in_executor(None, _render_all_pages)
+    if not rendered_pages:
+        return ""
+
+    # Load OCR prompt template
+    from lib.wiki_ops import get_template
+    try:
+        ocr_template = get_template("ingest_ocr.md")
+    except Exception as e:
+        logger.warning("Could not load ingest_ocr.md template: %s. Using default OCR prompt.", e)
+        ocr_template = None
+
+    semaphore = asyncio.Semaphore(2)
+
+    async def _ocr_single_page(page_num: int, img_path: Path, total: int) -> Tuple[int, Optional[str]]:
+        if ocr_template:
+            prompt = ocr_template.render(
+                domain_name=domain_name,
+                source_filename=src_name,
+                page_number=page_num,
+                total_pages=total,
+            )
+        else:
+            prompt = (
+                f"Transcribe all text, questions, lists, and tables visible on this scanned document page (Page {page_num} of {total}) "
+                "into clean, exhaustive Markdown. Format tables as GFM pipe tables. Do not omit any content."
+            )
+
+        async with semaphore:
+            await asyncio.sleep(0.3)
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: provider.call_vision(
+                        image_path=img_path,
+                        prompt=prompt,
+                        operation="vision",
+                    ),
+                )
+                return page_num, result
+            except Exception as ex:
+                logger.warning("Vision OCR failed for page %d of %s: %s", page_num, src_name, ex)
+                return page_num, None
+
+    tasks = [_ocr_single_page(p_num, path, tot) for p_num, path, tot in rendered_pages]
+    results = await asyncio.gather(*tasks)
+
+    page_blocks = []
+    for p_num, page_md in sorted(results, key=lambda x: x[0]):
+        if page_md and page_md.strip():
+            page_blocks.append(f"<!-- Page {p_num} -->\n\n{page_md.strip()}")
+
+    if not page_blocks:
+        return ""
+
+    logger.info("Successfully OCR'd %d page(s) from scanned PDF %s.", len(page_blocks), src_name)
+    return "\n\n-----\n\n".join(page_blocks)
+
+
 async def process_pdf_source(
     pdf_path: Path,
     wiki_dir: Optional[Path] = None,
@@ -237,6 +333,26 @@ async def process_pdf_source(
             image_path=str(assets_dir),
         ),
     )
+
+    # Check for scanned PDF (minimal selectable digital text)
+    clean_text = re.sub(r"!\[.*?\]\(.*?\)", "", raw_markdown)
+    clean_text = re.sub(r"[\s\-_=|#*`]+", " ", clean_text).strip()
+    words = clean_text.split()
+    if len(words) < 50 and provider and hasattr(provider, "call_vision"):
+        logger.info(
+            "PDF %s contains minimal selectable text (%d words). Triggering multimodal vision OCR fallback...",
+            pdf_path.name,
+            len(words),
+        )
+        ocr_markdown = await ocr_scanned_pdf(
+            pdf_path=pdf_path,
+            assets_dir=assets_dir,
+            provider=provider,
+            domain_name=domain_name,
+            source_filename=pdf_path.name,
+        )
+        if ocr_markdown and ocr_markdown.strip():
+            return ocr_markdown
 
     # 2. Filter out decorative noise, logos, and tiny icons
     valid_images = filter_extracted_images(assets_dir, min_dim=min_dim)
