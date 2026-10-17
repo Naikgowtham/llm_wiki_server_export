@@ -19,6 +19,9 @@ def test_get_raw_files_state(tmp_path: Path):
     f3 = raw_dir / "doc3.pdf"
     f3.write_bytes(b"%PDF-1.4 dummy")
 
+    f4 = raw_dir / "doc4.html"
+    f4.write_text("<html><body>Test HTML</body></html>", encoding="utf-8")
+
     ignored = raw_dir / ".hidden.md"
     ignored.write_text("Secret", encoding="utf-8")
 
@@ -34,10 +37,11 @@ def test_get_raw_files_state(tmp_path: Path):
     assert "doc1.md" in state
     assert "doc2.txt" in state
     assert "doc3.pdf" in state
+    assert "doc4.html" in state
     assert ".hidden.md" not in state
     assert "failed/broken.md" not in state
     assert "quarantine/quarantined.pdf" not in state
-    assert len(state) == 3
+    assert len(state) == 4
 
 
 def test_get_already_ingested(tmp_path: Path):

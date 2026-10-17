@@ -43,7 +43,7 @@ def ingest_cmd(source_path: Optional[str], wiki_path: str, ingest_all: bool, yes
         ingested = get_already_ingested(wiki_dir)
         
         for f in sorted(raw_dir.glob("*")):
-            if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in (".md", ".txt", ".pdf"):
+            if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in (".md", ".txt", ".pdf", ".html", ".htm"):
                 if f.stem not in ingested and f.name not in ingested and slugify(f.stem) not in ingested:
                     sources_to_process.append(f)
         if not sources_to_process:

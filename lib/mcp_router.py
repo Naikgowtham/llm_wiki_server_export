@@ -172,7 +172,7 @@ class WikiRouterManager:
         raw_sources = 0
         if raw_folder.is_dir():
             for f in raw_folder.rglob("*"):
-                if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf"):
+                if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf", ".html", ".htm"):
                     raw_sources += 1
 
         total_pages = len(list(wiki_folder.rglob("*.md")))

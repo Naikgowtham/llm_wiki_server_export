@@ -293,7 +293,7 @@ def check_vaults_and_storage(base_dir: Optional[Path] = None) -> Dict[str, Any]:
             # Check uncompiled backlog in raw/
             if raw_dir.exists():
                 for rf in raw_dir.glob("*"):
-                    if rf.is_file() and not rf.name.startswith(".") and rf.suffix.lower() in (".md", ".txt", ".pdf"):
+                    if rf.is_file() and not rf.name.startswith(".") and rf.suffix.lower() in (".md", ".txt", ".pdf", ".html", ".htm"):
                         cached = cache_dir / rf.name if cache_dir.exists() else None
                         if not cached or not cached.exists():
                             v_info["backlog_count"] += 1

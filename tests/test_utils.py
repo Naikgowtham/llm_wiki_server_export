@@ -86,6 +86,29 @@ def test_read_source_file_pdf(tmp_path):
     assert "Sample PDF Ingestion Text" in result
 
 
+def test_read_source_file_html(tmp_path):
+    html_file = tmp_path / "chat.html"
+    html_file.write_text("""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Claude Chat</title><style>.test{color:red;}</style></head>
+    <body>
+        <script>console.log('strip me');</script>
+        <h1>Claude Chat Log</h1>
+        <p><strong>Human:</strong> Tell me about LLMs.</p>
+        <p><strong>Assistant:</strong> LLMs are language models.</p>
+    </body>
+    </html>
+    """, encoding="utf-8")
+
+    result = read_source_file(html_file)
+    assert "Claude Chat Log" in result
+    assert "Tell me about LLMs." in result
+    assert "LLMs are language models." in result
+    assert "strip me" not in result
+    assert ".test{color:red;}" not in result
+
+
 def test_build_link_graph(tmp_path):
     """Test building link graph from markdown notes."""
     from lib.utils import build_link_graph

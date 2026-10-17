@@ -126,10 +126,48 @@ def build_link_graph(wiki_dir: Path) -> Dict[str, Set[str]]:
     return graph
 
 
+SUPPORTED_SOURCE_EXTENSIONS: Set[str] = {".md", ".txt", ".pdf", ".html", ".htm"}
+
+
+def convert_html_to_markdown(html_content: str) -> str:
+    """Convert raw HTML content into clean, readable Markdown for ingestion."""
+    if not html_content or not html_content.strip():
+        return ""
+
+    try:
+        from bs4 import BeautifulSoup
+        import html2text
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        # Strip noisy elements not relevant for knowledge extraction
+        for element in soup(["script", "style", "noscript", "meta", "link", "svg", "nav", "footer"]):
+            element.decompose()
+
+        converter = html2text.HTML2Text()
+        converter.ignore_links = False
+        converter.ignore_images = False
+        converter.body_width = 0
+        converter.protect_links = True
+        converter.unicode_snob = True
+        converter.mark_code = True
+
+        rendered = converter.handle(str(soup)).strip()
+        if rendered:
+            return rendered
+    except Exception:
+        pass
+
+    # Fallback if bs4/html2text fails: basic regex tag strip
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_content, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def read_source_file(file_path: Path) -> str:
-    """Read a raw source file (.md, .txt, .pdf), converting PDF to Markdown if necessary."""
+    """Read a raw source file (.md, .txt, .pdf, .html), converting PDF/HTML to Markdown if necessary."""
     file_path = Path(file_path)
-    if file_path.suffix.lower() == ".pdf":
+    suffix = file_path.suffix.lower()
+    if suffix == ".pdf":
         try:
             import pymupdf4llm
             return pymupdf4llm.to_markdown(str(file_path))
@@ -137,6 +175,9 @@ def read_source_file(file_path: Path) -> str:
             raise ImportError(
                 "pymupdf4llm is required to ingest PDF files. Please install it with: pip install pymupdf4llm"
             )
+    elif suffix in {".html", ".htm"}:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+        return convert_html_to_markdown(content)
     return file_path.read_text(encoding="utf-8")
 
 
