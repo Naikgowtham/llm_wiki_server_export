@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import logging
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -14,6 +16,8 @@ from rich.panel import Panel
 from lib.providers import LLMProvider, LLMProviderError
 from lib.utils import SUPPORTED_SOURCE_EXTENSIONS
 from lib.wiki_ops import run_ingest, run_lint
+
+logger = logging.getLogger("llm-wiki.watch")
 
 console = Console()
 
@@ -90,6 +94,38 @@ def discover_wikis(base_dir: Optional[Path], wiki_path: Optional[Path]) -> List[
     return wikis
 
 
+def _execute_vault_ingestion(
+    w_dir: Path,
+    file_path: Path,
+    provider: Any,
+    yes: bool,
+    lint: bool,
+    lint_fix: bool,
+) -> tuple[Path, Path, Optional[List[Any]], Optional[Dict[str, Any]], Optional[Exception]]:
+    """Worker task executing ingestion and optional post-ingest linting for a single vault."""
+    try:
+        applied = asyncio.run(run_ingest(
+            source_file=file_path,
+            wiki_dir=w_dir,
+            provider=provider,
+            auto_approve=yes,
+        ))
+        lint_report = None
+        if applied and lint:
+            try:
+                lint_report = asyncio.run(run_lint(
+                    wiki_dir=w_dir,
+                    provider=provider,
+                    fix=lint_fix,
+                    auto_approve=yes,
+                ))
+            except Exception as le:
+                logger.warning("Post-ingest lint failed on %s: %s", w_dir.name, le)
+        return (w_dir, file_path, applied, lint_report, None)
+    except Exception as e:
+        return (w_dir, file_path, None, None, e)
+
+
 @click.command("watch")
 @click.option("--base-dir", "-b", default=None, type=click.Path(exists=True, file_okay=False), help="Path to base directory containing multiple wiki vaults (e.g. ~/wikis).")
 @click.option("--wiki-path", "-w", default=None, type=click.Path(exists=True, file_okay=False), help="Path to a single wiki vault.")
@@ -164,189 +200,183 @@ Interval:      {interval}s{" (Periodic lint: " + str(lint_interval) + "s)" if li
     total_files = sum(len(s) for s in known_states.values())
     console.print(f"[dim]Tracking {total_files} existing file(s) across {len(discovered)} vault(s). Ready for new drops...[/dim]\n")
 
+    active_vault_workers: Dict[Path, concurrent.futures.Future] = {}
+    pending_vault_files: Dict[Path, List[Path]] = {}
+    stability_tracker: Dict[tuple[Path, str], tuple[float, int]] = {}
+
     try:
-        while True:
-            time.sleep(interval)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            while True:
+                time.sleep(interval)
 
-            # Dynamically refresh vaults if watching a base directory
-            if base_p:
-                current_wikis = discover_wikis(base_p, None)
+                # 1. Collect results from completed vault worker tasks
+                for w_dir, fut in list(active_vault_workers.items()):
+                    if fut.done():
+                        del active_vault_workers[w_dir]
+                        try:
+                            w_dir_res, file_path, applied, lint_report, err = fut.result()
+                            rel_name = str(file_path.relative_to(w_dir_res / "raw"))
+                            file_key = (w_dir_res, rel_name)
+                            ingested = ingested_names_map.get(w_dir_res, set())
+
+                            if err:
+                                count = failure_counts.get(file_key, 0) + 1
+                                failure_counts[file_key] = count
+                                backoff = min(300.0, 5.0 * (2 ** (count - 1)))
+                                retry_after[file_key] = time.time() + backoff
+                                if isinstance(err, LLMProviderError):
+                                    console.print(f"[bold red]LLM Provider Error in {w_dir_res.name}:[/bold red] {err}")
+                                else:
+                                    console.print(f"[bold red]Ingestion error for {file_path.name} in {w_dir_res.name}:[/bold red] {err}")
+                                console.print(
+                                    f"[yellow]Will retry {file_path.name} in {int(backoff)}s "
+                                    f"(attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                                )
+                            elif applied:
+                                ingested.add(file_path.stem)
+                                ingested.add(file_path.name)
+                                failure_counts.pop(file_key, None)
+                                retry_after.pop(file_key, None)
+                                stability_tracker.pop(file_key, None)
+                                console.print(
+                                    f"[bold green]✓ Compiled and committed {len(applied)} wiki page(s) for {file_path.name} in {w_dir_res.name}![/bold green]\n"
+                                )
+                                if lint_report:
+                                    broken = len(lint_report.get("broken_links", []))
+                                    orphans = len(lint_report.get("orphan_pages", []))
+                                    semantic = len(lint_report.get("semantic_issues", []))
+                                    console.print(
+                                        f"[bold green]✓ Post-ingestion lint completed for {w_dir_res.name}:[/bold green] "
+                                        f"{broken} broken link(s), {orphans} orphan(s), {semantic} semantic issue(s).\n"
+                                    )
+                                    last_lint_times[w_dir_res] = time.time()
+                            else:
+                                count = failure_counts.get(file_key, 0) + 1
+                                failure_counts[file_key] = count
+                                backoff = min(300.0, 5.0 * (2 ** (count - 1)))
+                                retry_after[file_key] = time.time() + backoff
+                                console.print(
+                                    f"[yellow]No modifications were applied for {file_path.name}. "
+                                    f"Backing off {int(backoff)}s (attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                                )
+                        except Exception as worker_e:
+                            console.print(f"[bold red]Worker error:[/bold red] {worker_e}\n")
+
+                # 2. Dynamically refresh vaults if watching a base directory
+                if base_p:
+                    current_wikis = discover_wikis(base_p, None)
+                    for w_dir in current_wikis:
+                        if w_dir not in known_states:
+                            raw_dir = w_dir / "raw"
+                            raw_dir.mkdir(parents=True, exist_ok=True)
+                            known_states[w_dir] = get_raw_files_state(raw_dir)
+                            ingested_names_map[w_dir] = get_already_ingested(w_dir)
+                            last_lint_times[w_dir] = time.time()
+                            console.print(f"[bold green]✨ Discovered new vault:[/bold green] [bold cyan]{w_dir.name}[/bold cyan]")
+                else:
+                    current_wikis = discovered
+
+                # 3. Rapidly scan all vaults for new/modified files
                 for w_dir in current_wikis:
-                    if w_dir not in known_states:
-                        raw_dir = w_dir / "raw"
-                        raw_dir.mkdir(parents=True, exist_ok=True)
-                        known_states[w_dir] = get_raw_files_state(raw_dir)
-                        ingested_names_map[w_dir] = get_already_ingested(w_dir)
-                        last_lint_times[w_dir] = time.time()
-                        console.print(f"[bold green]✨ Discovered new vault:[/bold green] [bold cyan]{w_dir.name}[/bold cyan]")
-            else:
-                current_wikis = discovered
-
-            for w_dir in current_wikis:
-                raw_dir = w_dir / "raw"
-                if not raw_dir.is_dir():
-                    continue
-
-                current_state = get_raw_files_state(raw_dir)
-                known = known_states.get(w_dir, {})
-                ingested = ingested_names_map.get(w_dir, set())
-
-                new_or_modified = []
-                for rel_path, (mtime, size) in current_state.items():
-                    file_key = (w_dir, rel_path)
-                    file_obj = raw_dir / rel_path
-                    file_stem = file_obj.stem
-
-                    # Check if file has exceeded failure threshold -> quarantine to raw/failed/
-                    if failure_counts.get(file_key, 0) >= MAX_FAILURE_ATTEMPTS:
-                        failed_dir = raw_dir / "failed"
-                        failed_dir.mkdir(parents=True, exist_ok=True)
-                        dest = failed_dir / file_obj.name
-                        try:
-                            file_obj.rename(dest)
-                            console.print(
-                                f"[bold red]⛔ Quarantined failing source after {MAX_FAILURE_ATTEMPTS} attempts:[/bold red] "
-                                f"{file_obj.name} -> raw/failed/{file_obj.name}\n"
-                            )
-                        except Exception as q_err:
-                            console.print(f"[bold red]Failed to quarantine {file_obj.name}:[/bold red] {q_err}\n")
-                            retry_after[file_key] = time.time() + 3600.0
-                        failure_counts.pop(file_key, None)
-                        retry_after.pop(file_key, None)
+                    raw_dir = w_dir / "raw"
+                    if not raw_dir.is_dir():
                         continue
 
-                    # Check backoff window
-                    if time.time() < retry_after.get(file_key, 0.0):
-                        continue
+                    current_state = get_raw_files_state(raw_dir)
+                    known = known_states.get(w_dir, {})
+                    ingested = ingested_names_map.get(w_dir, set())
 
-                    from lib.utils import slugify
-                    is_ingested = (
-                        file_stem in ingested
-                        or file_obj.name in ingested
-                        or slugify(file_stem) in ingested
-                    )
-                    if not is_ingested:
-                        new_or_modified.append(file_obj)
-                    elif rel_path in known and (mtime > known[rel_path][0] or size != known[rel_path][1]):
-                        # File was modified by user: reset failure counter to provide fresh attempts
-                        failure_counts.pop(file_key, None)
-                        retry_after.pop(file_key, None)
-                        new_or_modified.append(file_obj)
+                    for rel_path, (mtime, size) in current_state.items():
+                        file_key = (w_dir, rel_path)
+                        file_obj = raw_dir / rel_path
+                        file_stem = file_obj.stem
 
-                known_states[w_dir] = current_state
-
-                # Process detected files for this vault
-                ingested_any = False
-                for file_path in new_or_modified:
-                    # Wait briefly to ensure file download/write completed (Syncthing safety)
-                    prev_size = -1
-                    prev_mtime = -1.0
-                    for _ in range(15):
-                        try:
-                            st = file_path.stat()
-                            cur_size = st.st_size
-                            cur_mtime = st.st_mtime
-                            if cur_size == prev_size and cur_mtime == prev_mtime and cur_size > 0:
-                                break
-                            prev_size = cur_size
-                            prev_mtime = cur_mtime
-                        except OSError:
-                            pass
-                        time.sleep(1.0)
-
-                    console.print(f"\n[bold green]⚡ New source detected in {w_dir.name}:[/bold green] [bold cyan]{file_path.name}[/bold cyan]")
-                    console.print(f"[dim]Starting automated compilation into {w_dir.name}...[/dim]")
-
-                    rel_name = str(file_path.relative_to(raw_dir))
-                    file_key = (w_dir, rel_name)
-
-                    try:
-                        applied = asyncio.run(run_ingest(
-                            source_file=file_path,
-                            wiki_dir=w_dir,
-                            provider=provider,
-                            auto_approve=yes,
-                        ))
-                        if applied:
-                            ingested.add(file_path.stem)
-                            ingested.add(file_path.name)
+                        # Check failure threshold -> quarantine
+                        if failure_counts.get(file_key, 0) >= MAX_FAILURE_ATTEMPTS:
+                            failed_dir = raw_dir / "failed"
+                            failed_dir.mkdir(parents=True, exist_ok=True)
+                            dest = failed_dir / file_obj.name
+                            try:
+                                file_obj.rename(dest)
+                                console.print(
+                                    f"[bold red]⛔ Quarantined failing source after {MAX_FAILURE_ATTEMPTS} attempts:[/bold red] "
+                                    f"{file_obj.name} -> raw/failed/{file_obj.name}\n"
+                                )
+                            except Exception as q_err:
+                                console.print(f"[bold red]Failed to quarantine {file_obj.name}:[/bold red] {q_err}\n")
+                                retry_after[file_key] = time.time() + 3600.0
                             failure_counts.pop(file_key, None)
                             retry_after.pop(file_key, None)
-                            console.print(
-                                f"[bold green]✓ Compiled and committed {len(applied)} wiki page(s) for {file_path.name} in {w_dir.name}![/bold green]\n"
-                            )
-                            ingested_any = True
-                        else:
-                            count = failure_counts.get(file_key, 0) + 1
-                            failure_counts[file_key] = count
-                            backoff = min(300.0, 5.0 * (2 ** (count - 1)))
-                            retry_after[file_key] = time.time() + backoff
-                            console.print(
-                                f"[yellow]No modifications were applied for {file_path.name}. "
-                                f"Backing off {int(backoff)}s (attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
-                            )
-                    except LLMProviderError as e:
-                        count = failure_counts.get(file_key, 0) + 1
-                        failure_counts[file_key] = count
-                        backoff = min(300.0, 5.0 * (2 ** (count - 1)))
-                        retry_after[file_key] = time.time() + backoff
-                        console.print(f"[bold red]LLM Provider Error in {w_dir.name}:[/bold red] {e}")
-                        console.print(
-                            f"[yellow]Will retry {file_path.name} in {int(backoff)}s "
-                            f"(attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                            stability_tracker.pop(file_key, None)
+                            continue
+
+                        # Check backoff window
+                        if time.time() < retry_after.get(file_key, 0.0):
+                            continue
+
+                        from lib.utils import slugify
+                        is_ingested = (
+                            file_stem in ingested
+                            or file_obj.name in ingested
+                            or slugify(file_stem) in ingested
                         )
-                    except Exception as e:
-                        count = failure_counts.get(file_key, 0) + 1
-                        failure_counts[file_key] = count
-                        backoff = min(300.0, 5.0 * (2 ** (count - 1)))
-                        retry_after[file_key] = time.time() + backoff
-                        console.print(f"[bold red]Ingestion error for {file_path.name} in {w_dir.name}:[/bold red] {e}")
-                        console.print(
-                            f"[yellow]Will retry {file_path.name} in {int(backoff)}s "
-                            f"(attempt {count}/{MAX_FAILURE_ATTEMPTS})[/yellow]\n"
+                        is_modified = rel_path in known and (mtime > known[rel_path][0] or size != known[rel_path][1])
+
+                        if not is_ingested or is_modified:
+                            if is_modified:
+                                failure_counts.pop(file_key, None)
+                                retry_after.pop(file_key, None)
+
+                            # Stability check: ensure file write/sync completed (without blocking sleep)
+                            prev = stability_tracker.get(file_key)
+                            if prev and prev[0] == mtime and prev[1] == size and size > 0:
+                                # File is stable and ready to ingest
+                                pending_list = pending_vault_files.setdefault(w_dir, [])
+                                if file_obj not in pending_list:
+                                    pending_list.append(file_obj)
+                            else:
+                                stability_tracker[file_key] = (mtime, size)
+
+                    known_states[w_dir] = current_state
+
+                # 4. Dispatch pending files concurrently across idle vaults
+                for w_dir, files in list(pending_vault_files.items()):
+                    if files and w_dir not in active_vault_workers:
+                        next_file = files.pop(0)
+                        console.print(f"\n[bold green]⚡ New source detected in {w_dir.name}:[/bold green] [bold cyan]{next_file.name}[/bold cyan]")
+                        console.print(f"[dim]Starting automated compilation into {w_dir.name}...[/dim]")
+                        active_vault_workers[w_dir] = executor.submit(
+                            _execute_vault_ingestion,
+                            w_dir,
+                            next_file,
+                            provider,
+                            yes,
+                            lint,
+                            lint_fix,
                         )
 
-                # If any files were ingested and lint is enabled, run post-ingest linting!
-                if ingested_any and lint:
-                    console.print(f"[bold cyan]🔍 Running automatic post-ingestion lint for {w_dir.name}...[/bold cyan]")
-                    try:
-                        report = asyncio.run(run_lint(
-                            wiki_dir=w_dir,
-                            provider=provider,
-                            fix=lint_fix,
-                            auto_approve=yes,
-                        ))
-                        broken = len(report.get("broken_links", []))
-                        orphans = len(report.get("orphan_pages", []))
-                        semantic = len(report.get("semantic_issues", []))
-                        console.print(
-                            f"[bold green]✓ Post-ingestion lint completed for {w_dir.name}:[/bold green] "
-                            f"{broken} broken link(s), {orphans} orphan(s), {semantic} semantic issue(s).\n"
-                        )
-                        last_lint_times[w_dir] = time.time()
-                    except Exception as e:
-                        console.print(f"[bold yellow]⚠️ Post-ingestion lint warning for {w_dir.name}:[/bold yellow] {e}\n")
-
-                # Scheduled periodic lint check if enabled
-                if lint_interval > 0 and (time.time() - last_lint_times.get(w_dir, 0)) >= lint_interval:
-                    console.print(f"\n[dim]Running scheduled periodic lint audit on {w_dir.name}...[/dim]")
-                    try:
-                        report = asyncio.run(run_lint(
-                            wiki_dir=w_dir,
-                            provider=provider,
-                            fix=lint_fix,
-                            auto_approve=yes,
-                        ))
-                        broken = len(report.get("broken_links", []))
-                        orphans = len(report.get("orphan_pages", []))
-                        semantic = len(report.get("semantic_issues", []))
-                        console.print(
-                            f"[bold green]✓ Periodic lint completed for {w_dir.name}:[/bold green] "
-                            f"{broken} broken link(s), {orphans} orphan(s), {semantic} semantic issue(s).\n"
-                        )
-                        last_lint_times[w_dir] = time.time()
-                    except Exception as e:
-                        console.print(f"[bold yellow]⚠️ Periodic lint warning for {w_dir.name}:[/bold yellow] {e}\n")
+                # 5. Scheduled periodic lint check for idle vaults
+                if lint_interval > 0:
+                    for w_dir in current_wikis:
+                        if w_dir not in active_vault_workers and (time.time() - last_lint_times.get(w_dir, 0)) >= lint_interval:
+                            console.print(f"\n[dim]Running scheduled periodic lint audit on {w_dir.name}...[/dim]")
+                            try:
+                                report = asyncio.run(run_lint(
+                                    wiki_dir=w_dir,
+                                    provider=provider,
+                                    fix=lint_fix,
+                                    auto_approve=yes,
+                                ))
+                                broken = len(report.get("broken_links", []))
+                                orphans = len(report.get("orphan_pages", []))
+                                semantic = len(report.get("semantic_issues", []))
+                                console.print(
+                                    f"[bold green]✓ Periodic lint completed for {w_dir.name}:[/bold green] "
+                                    f"{broken} broken link(s), {orphans} orphan(s), {semantic} semantic issue(s).\n"
+                                )
+                                last_lint_times[w_dir] = time.time()
+                            except Exception as e:
+                                console.print(f"[bold yellow]⚠️ Periodic lint warning for {w_dir.name}:[/bold yellow] {e}\n")
 
     except (KeyboardInterrupt, EOFError):
         console.print("\n[yellow]Watcher stopped by user.[/yellow]")

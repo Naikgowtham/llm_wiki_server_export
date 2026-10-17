@@ -87,20 +87,50 @@ def extract_source_citations(content: str) -> List[str]:
     return [m.strip() for m in re.findall(pattern, content)]
 
 
-def count_tokens_approx(text: str) -> int:
-    """Approximate token count without strict dependency on tokenizer models.
+_TIKTOKEN_ENCODER = None
 
-    Uses tiktoken if available, otherwise falls back to ~4 characters per token.
+
+def count_tokens_approx(text: str) -> int:
+    """Accurately approximate token count for LLM prompts and chunking.
+
+    Uses cached tiktoken (cl100k_base) when available. Falls back to a density-aware
+    estimator that weights code, JSON, math formulas, and non-Latin scripts (e.g. Hindi, CJK)
+    where characters-per-token is significantly higher than English prose.
     """
     if not text:
         return 0
+
+    global _TIKTOKEN_ENCODER
     try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
+        if _TIKTOKEN_ENCODER is None:
+            import tiktoken
+            _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+        return len(_TIKTOKEN_ENCODER.encode(text))
     except Exception:
-        # Fallback estimation: ~4 chars per token in English
-        return max(1, len(text) // 4)
+        # Fallback density-aware token estimation:
+        # 1. Non-ASCII / Unicode / regional scripts (Devanagari, CJK) tokenize densely (~1 char/token)
+        # 2. Syntax symbols in code, JSON, LaTeX ({, }, [, ], (, ), ;, =, +, \, $) tokenize at ~2 chars/token
+        # 3. Standard alphanumeric prose tokenizes at ~4 chars/token
+        non_ascii_count = 0
+        symbol_count = 0
+        prose_chars = 0
+        symbols_set = set("{}[]();:=+-*/\\<>'\",^&%$#@!~`|?")
+
+        for ch in text:
+            code_point = ord(ch)
+            if code_point > 127:
+                non_ascii_count += 1
+            elif ch in symbols_set:
+                symbol_count += 1
+            else:
+                prose_chars += 1
+
+        est_tokens = (
+            non_ascii_count  # 1 token per non-ASCII char
+            + (symbol_count + 1) // 2  # ~2 chars per token for code/LaTeX symbols
+            + (prose_chars + 3) // 4  # ~4 chars per token for English prose
+        )
+        return max(1, est_tokens)
 
 
 def build_link_graph(wiki_dir: Path) -> Dict[str, Set[str]]:

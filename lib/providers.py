@@ -5,13 +5,21 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+import json
+import warnings
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from lib.config import ProvidersConfig, load_providers_config
+from lib.utils import count_tokens_approx
+
+# Filter deprecation warnings for Gemini 3+ sampling parameters in LiteLLM/Google SDKs
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*continue to function for Gemini 3\+.*")
 
 logger = logging.getLogger(__name__)
 
 PLACEHOLDER_PREFIXES = ("sk-ant-...", "sk-...", "AIza...", "your-", "...")
+DEFAULT_COOLDOWNS_FILE = Path.home() / ".config" / "llm-wiki" / "cooldowns.json"
 
 
 class LLMProviderError(Exception):
@@ -20,12 +28,58 @@ class LLMProviderError(Exception):
 
 
 class RateLimitCooldownTracker:
-    """Tracks rate-limited models and cooldown expirations globally across all operations and wikis."""
+    """Tracks rate-limited models and cooldown expirations globally across all operations and wikis.
+
+    Persists cooldown state to ~/.config/llm-wiki/cooldowns.json so that independent CLI runs
+    (wiki ingest, wiki lint, wiki query) share cooldown knowledge and do not re-hit exhausted keys.
+    """
     _cooldowns: Dict[str, float] = {}
     _quota_exhausted: Set[str] = set()
+    _last_load_mtime: float = 0.0
+
+    @classmethod
+    def _load_from_disk(cls):
+        try:
+            if not DEFAULT_COOLDOWNS_FILE.exists():
+                return
+            mtime = DEFAULT_COOLDOWNS_FILE.stat().st_mtime
+            if mtime <= cls._last_load_mtime:
+                return
+            cls._last_load_mtime = mtime
+            data = json.loads(DEFAULT_COOLDOWNS_FILE.read_text(encoding="utf-8"))
+            now = time.time()
+            disk_cooldowns = data.get("cooldowns", {})
+            disk_exhausted = set(data.get("quota_exhausted", []))
+            for m, exp in disk_cooldowns.items():
+                if exp > now:
+                    cls._cooldowns[m] = max(cls._cooldowns.get(m, 0.0), float(exp))
+                    if m in disk_exhausted:
+                        cls._quota_exhausted.add(m)
+        except Exception as e:
+            logger.debug("Failed loading cooldowns file: %s", e)
+
+    @classmethod
+    def _save_to_disk(cls):
+        try:
+            now = time.time()
+            active_cooldowns = {m: exp for m, exp in cls._cooldowns.items() if exp > now}
+            active_exhausted = [m for m in cls._quota_exhausted if m in active_cooldowns]
+            DEFAULT_COOLDOWNS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "cooldowns": active_cooldowns,
+                "quota_exhausted": active_exhausted,
+                "updated_at": now,
+            }
+            tmp_file = DEFAULT_COOLDOWNS_FILE.with_suffix(".tmp")
+            tmp_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp_file, DEFAULT_COOLDOWNS_FILE)
+            cls._last_load_mtime = DEFAULT_COOLDOWNS_FILE.stat().st_mtime
+        except Exception as e:
+            logger.debug("Failed saving cooldowns to file: %s", e)
 
     @classmethod
     def is_cooling_down(cls, model_id: str) -> bool:
+        cls._load_from_disk()
         expires = cls._cooldowns.get(model_id)
         if not expires:
             cls._quota_exhausted.discard(model_id)
@@ -33,28 +87,34 @@ class RateLimitCooldownTracker:
         if time.time() >= expires:
             cls._cooldowns.pop(model_id, None)
             cls._quota_exhausted.discard(model_id)
+            cls._save_to_disk()
             return False
         return True
 
     @classmethod
     def is_quota_exhausted(cls, model_id: str) -> bool:
+        cls._load_from_disk()
         return cls.is_cooling_down(model_id) and model_id in cls._quota_exhausted
 
     @classmethod
     def mark_cooling_down(cls, model_id: str, cooldown_seconds: float = 60.0, is_quota_exhausted: bool = False):
+        cls._load_from_disk()
         cls._cooldowns[model_id] = time.time() + cooldown_seconds
         if is_quota_exhausted or cooldown_seconds >= 300.0:
             cls._quota_exhausted.add(model_id)
         else:
             cls._quota_exhausted.discard(model_id)
+        cls._save_to_disk()
 
     @classmethod
     def clear(cls):
         cls._cooldowns.clear()
         cls._quota_exhausted.clear()
+        cls._save_to_disk()
 
     @classmethod
     def get_cooldowns(cls) -> Dict[str, float]:
+        cls._load_from_disk()
         now = time.time()
         active: Dict[str, float] = {}
         for m, exp in list(cls._cooldowns.items()):
@@ -68,6 +128,7 @@ class RateLimitCooldownTracker:
 
     @classmethod
     def filter_available_models(cls, models: List[str]) -> List[str]:
+        cls._load_from_disk()
         available = [m for m in models if not cls.is_cooling_down(m)]
         if available:
             return available
@@ -298,6 +359,18 @@ class LLMProvider:
                     raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
                     clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
+                is_groq = "groq" in (model_id + " " + clean_model).lower()
+                if is_groq:
+                    prompt_str = " ".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))
+                    est_tokens = count_tokens_approx(prompt_str)
+                    if est_tokens > 5200:
+                        logger.info(
+                            "Prompt size (~%d tokens) exceeds Groq free-tier input TPM limit (5200). Skipping Groq model %s.",
+                            est_tokens,
+                            model_id,
+                        )
+                        continue
+
                 if operation in ("ingest_synth", "lint_fix") or "nous" in clean_model or "nous" in model_id:
                     op_timeout = 180
                 elif operation == "vision":
@@ -309,10 +382,11 @@ class LLMProvider:
                 kwargs: Dict[str, Any] = {
                     "model": clean_model,
                     "messages": messages,
-                    "temperature": 1.0 if "gemini-3" in clean_model else temperature,
                     "max_tokens": resolve_operation_max_tokens(model_id, clean_model, operation),
                     "timeout": op_timeout,
                 }
+                if "gemini-3" not in clean_model:
+                    kwargs["temperature"] = temperature
 
                 if "local/" in model_id or (p_data and "localhost" in str(p_data.get("api_base", ""))):
                     kwargs["num_ctx"] = 8192
@@ -562,6 +636,18 @@ class LLMProvider:
                     raw_cf = model_id.split("/", 1)[1] if ("/" in model_id and not model_id.startswith("@cf/")) else model_id
                     clean_model = f"cloudflare/{raw_cf}" if not raw_cf.startswith("cloudflare/") else raw_cf
 
+                is_groq = "groq" in (model_id + " " + clean_model).lower()
+                if is_groq:
+                    prompt_str = " ".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))
+                    est_tokens = count_tokens_approx(prompt_str)
+                    if est_tokens > 5200:
+                        logger.info(
+                            "Prompt size (~%d tokens) exceeds Groq free-tier input TPM limit (5200). Skipping Groq model %s.",
+                            est_tokens,
+                            model_id,
+                        )
+                        continue
+
                 if operation in ("ingest_synth", "lint_fix") or "nous" in clean_model or "nous" in model_id:
                     op_timeout = 180
                 elif "cloudflare" in clean_model:
@@ -571,10 +657,11 @@ class LLMProvider:
                 kwargs = {
                     "model": clean_model,
                     "messages": messages,
-                    "temperature": 1.0 if "gemini-3" in clean_model else temperature,
                     "max_tokens": resolve_operation_max_tokens(model_id, clean_model, operation),
                     "timeout": op_timeout,
                 }
+                if "gemini-3" not in clean_model:
+                    kwargs["temperature"] = temperature
 
                 if "local/" in model_id or (p_data and "localhost" in str(p_data.get("api_base", ""))):
                     kwargs["num_ctx"] = 8192

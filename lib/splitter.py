@@ -78,6 +78,114 @@ def split_table_with_header_continuity(table_text: str, max_tokens: int) -> List
     return chunks
 
 
+def split_code_fence_safely(code_block: str, max_tokens: int) -> List[str]:
+    """Split an oversized fenced code block across multiple sub-chunks,
+    ensuring each sub-chunk has matching opening and closing code fences."""
+    lines = code_block.splitlines()
+    if len(lines) < 3:
+        return [code_block]
+
+    first_line = lines[0]
+    fence_match = re.match(r"^(\s*)(`{3,}|~{3,})(.*)$", first_line)
+    if not fence_match:
+        return [code_block]
+
+    indent = fence_match.group(1)
+    fence_chars = fence_match.group(2)
+    lang = fence_match.group(3)
+    opening_fence = f"{indent}{fence_chars}{lang}"
+    closing_fence = f"{indent}{fence_chars}"
+
+    # Extract body lines, excluding first and last fence lines
+    body_lines = lines[1:-1] if lines[-1].strip().startswith(fence_chars[:3]) else lines[1:]
+    chunks: List[str] = []
+    current_lines: List[str] = []
+
+    for line in body_lines:
+        cand_body = current_lines + [line]
+        cand_text = opening_fence + "\n" + "\n".join(cand_body) + "\n" + closing_fence
+        if count_tokens_approx(cand_text) > max_tokens and current_lines:
+            chunk_text = opening_fence + "\n" + "\n".join(current_lines) + "\n" + closing_fence
+            chunks.append(chunk_text)
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        chunk_text = opening_fence + "\n" + "\n".join(current_lines) + "\n" + closing_fence
+        chunks.append(chunk_text)
+
+    return chunks or [code_block]
+
+
+def _split_markdown_into_blocks(text: str) -> List[str]:
+    """Split markdown text into atomic blocks (code fences, tables, and paragraphs).
+    Ensures internal newlines within code blocks and tables do not sever them."""
+    lines = text.splitlines(keepends=True)
+    blocks: List[str] = []
+    current_block: List[str] = []
+    in_code_fence = False
+    fence_marker = ""
+    in_table = False
+
+    for line in lines:
+        stripped = line.strip()
+        fence_match = re.match(r"^(\s*)(`{3,}|~{3,})", line)
+
+        if fence_match:
+            marker = fence_match.group(2)
+            if not in_code_fence:
+                if current_block:
+                    blocks.append("".join(current_block).strip())
+                    current_block = []
+                in_code_fence = True
+                fence_marker = marker
+                in_table = False
+                current_block.append(line)
+                continue
+            elif stripped.startswith(fence_marker[:3]):
+                current_block.append(line)
+                blocks.append("".join(current_block).strip())
+                current_block = []
+                in_code_fence = False
+                fence_marker = ""
+                continue
+
+        if in_code_fence:
+            current_block.append(line)
+            continue
+
+        # Check for table row
+        is_tbl_line = stripped.startswith("|") and stripped.endswith("|")
+        if is_tbl_line:
+            if not in_table:
+                if current_block:
+                    blocks.append("".join(current_block).strip())
+                    current_block = []
+                in_table = True
+            current_block.append(line)
+            continue
+        elif in_table:
+            if current_block:
+                blocks.append("".join(current_block).strip())
+                current_block = []
+            in_table = False
+
+        if stripped == "":
+            if current_block:
+                blocks.append("".join(current_block).strip())
+                current_block = []
+        else:
+            current_block.append(line)
+
+    if current_block:
+        b = "".join(current_block).strip()
+        if b:
+            blocks.append(b)
+
+    return [b for b in blocks if b]
+
+
 def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]:
     """Split markdown text into sections demarcated by headers (#, ##, ###).
 
@@ -134,6 +242,11 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
                 for tc in table_chunks:
                     if tc.strip():
                         refined_sections.append((tc.strip(), hdrs))
+            elif clean.startswith("```") or clean.startswith("~~~"):
+                code_chunks = split_code_fence_safely(clean, max_tokens)
+                for cc in code_chunks:
+                    if cc.strip():
+                        refined_sections.append((cc.strip(), hdrs))
             else:
                 # Subdivide oversized block with sliding window
                 overlap = min(100, max_tokens // 10)
@@ -172,13 +285,14 @@ def _split_by_headers(text: str, max_tokens: int) -> List[tuple[str, List[str]]]
                     _append_safely(p_buf, headers)
                 continue
 
-            paragraphs = sec_text.split("\n\n")
+            # Use block-aware splitting so code blocks and tables are never severed
+            blocks = _split_markdown_into_blocks(sec_text)
             p_buf = ""
-            for p in paragraphs:
-                p_with_sep = (p_buf + "\n\n" + p).strip() if p_buf else p
+            for blk in blocks:
+                p_with_sep = (p_buf + "\n\n" + blk).strip() if p_buf else blk
                 if count_tokens_approx(p_with_sep) > max_tokens and p_buf:
                     _append_safely(p_buf, headers)
-                    p_buf = p
+                    p_buf = blk
                 else:
                     p_buf = p_with_sep
             if p_buf.strip():

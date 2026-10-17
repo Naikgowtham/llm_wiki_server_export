@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -284,24 +285,45 @@ def append_to_log(wiki_dir: Path, operation: str, title: str, details: List[str]
         f.write("\n".join(entry))
 
 
-def commit_if_git(wiki_dir: Path, message: str) -> bool:
+def commit_if_git(wiki_dir: Path, message: str, max_retries: int = 5) -> bool:
     """Perform a git commit in the wiki directory if git is initialized.
 
     Uses skip_hooks=True / --no-verify so that automated daemon commits are not aborted
     by interactive developer pre-commit micro-lint hooks.
+    Includes lock contention handling and stale lock recovery for .git/index.lock.
     """
-    try:
-        import git
-        repo = git.Repo(wiki_dir)
-        repo.git.add(A=True)
+    lock_file = wiki_dir / ".git" / "index.lock"
+
+    for attempt in range(max_retries):
         try:
-            repo.index.commit(message, skip_hooks=True)
-        except Exception:
-            repo.git.commit("-m", message, "--no-verify")
-        return True
-    except Exception as e:
-        logger.warning("Failed to auto-commit wiki changes in %s: %s", wiki_dir, e)
-        return False
+            if lock_file.exists():
+                try:
+                    lock_age = time.time() - lock_file.stat().st_mtime
+                    if lock_age > 15.0:
+                        logger.warning("Clearing stale Git lock file (%.1fs old): %s", lock_age, lock_file)
+                        lock_file.unlink(missing_ok=True)
+                    else:
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                except OSError:
+                    pass
+
+            import git
+            repo = git.Repo(wiki_dir)
+            repo.git.add(A=True)
+            try:
+                repo.index.commit(message, skip_hooks=True)
+            except Exception:
+                repo.git.commit("-m", message, "--no-verify")
+            return True
+        except Exception as e:
+            err_str = str(e).lower()
+            if "index.lock" in err_str and attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            logger.warning("Failed to auto-commit wiki changes in %s: %s", wiki_dir, e)
+            return False
+    return False
 
 
 def vector_cross_reference_pages(
@@ -524,8 +546,10 @@ async def run_ingest(
         chunk_summaries = []
         entity_map = {}
         concept_map = {}
-        all_claims = []
-        all_relationships = []
+        chunk_concepts = {i: [] for i in range(len(all_extractions))}
+        chunk_entities = {i: [] for i in range(len(all_extractions))}
+        chunk_claims = {i: [] for i in range(len(all_extractions))}
+        chunk_relationships = {i: [] for i in range(len(all_extractions))}
         all_caveats = []
 
         for idx, item in enumerate(all_extractions):
@@ -544,11 +568,14 @@ async def run_ingest(
                             "type": ent.get("type", "entity"),
                             "facts": [],
                             "count": 0,
+                            "first_chunk": idx + 1,
                         }
                     entity_map[name]["count"] += 1
                     for f in ent.get("facts", []):
                         if f not in entity_map[name]["facts"] and len(entity_map[name]["facts"]) < 3:
                             entity_map[name]["facts"].append(f)
+                    if name not in chunk_entities[idx]:
+                        chunk_entities[idx].append(name)
 
             for conc in item.get("concepts", []):
                 if isinstance(conc, dict) and conc.get("name"):
@@ -559,39 +586,96 @@ async def run_ingest(
                             "definition": conc.get("definition", ""),
                             "properties": [],
                             "count": 0,
+                            "first_chunk": idx + 1,
                         }
                     concept_map[cname]["count"] += 1
                     for p in conc.get("properties", []):
                         if p not in concept_map[cname]["properties"] and len(concept_map[cname]["properties"]) < 3:
                             concept_map[cname]["properties"].append(p)
+                    if cname not in chunk_concepts[idx]:
+                        chunk_concepts[idx].append(cname)
 
             for cl in item.get("claims", []):
                 if isinstance(cl, dict) and cl.get("statement"):
-                    all_claims.append(cl)
+                    chunk_claims[idx].append(cl)
 
             for rel in item.get("relationships", []):
                 if isinstance(rel, dict) and rel.get("subject") and rel.get("object"):
-                    all_relationships.append(rel)
+                    chunk_relationships[idx].append(rel)
 
             for cav in item.get("contradictions_or_caveats", []):
                 if cav and cav not in all_caveats:
                     all_caveats.append(cav)
 
-        top_entities = sorted(entity_map.values(), key=lambda x: x["count"], reverse=True)[:14]
-        for e in top_entities:
-            e.pop("count", None)
+        # 1. Stratified Concept Selection: Guarantee every chunk contributes its dedicated concepts
+        # (Preserves deep topics like ACID in Chapter 4 or B-Trees in Chapter 7 even if count == 1)
+        selected_concept_names: Set[str] = set()
+        prominent_concepts: List[Dict[str, Any]] = []
 
-        top_concepts = sorted(concept_map.values(), key=lambda x: x["count"], reverse=True)[:10]
-        for c in top_concepts:
-            c.pop("count", None)
+        # Pass A: Pick top 2 concepts per chunk
+        for c_idx in range(len(all_extractions)):
+            for cname in chunk_concepts.get(c_idx, [])[:2]:
+                if cname not in selected_concept_names and len(prominent_concepts) < 30:
+                    selected_concept_names.add(cname)
+                    item_copy = dict(concept_map[cname])
+                    item_copy.pop("count", None)
+                    prominent_concepts.append(item_copy)
+
+        # Pass B: Fill remaining budget with highest-frequency cross-chunk concepts
+        remaining_concepts = sorted(
+            [c for c in concept_map.values() if c["name"] not in selected_concept_names],
+            key=lambda x: x["count"],
+            reverse=True,
+        )
+        for c in remaining_concepts:
+            if len(prominent_concepts) >= 35:
+                break
+            selected_concept_names.add(c["name"])
+            item_copy = dict(c)
+            item_copy.pop("count", None)
+            prominent_concepts.append(item_copy)
+
+        # 2. Stratified Entity Selection: Guarantee every chunk contributes its key entities
+        selected_entity_names: Set[str] = set()
+        prominent_entities: List[Dict[str, Any]] = []
+
+        for c_idx in range(len(all_extractions)):
+            for ename in chunk_entities.get(c_idx, [])[:2]:
+                if ename not in selected_entity_names and len(prominent_entities) < 20:
+                    selected_entity_names.add(ename)
+                    item_copy = dict(entity_map[ename])
+                    item_copy.pop("count", None)
+                    prominent_entities.append(item_copy)
+
+        remaining_entities = sorted(
+            [e for e in entity_map.values() if e["name"] not in selected_entity_names],
+            key=lambda x: x["count"],
+            reverse=True,
+        )
+        for e in remaining_entities:
+            if len(prominent_entities) >= 25:
+                break
+            selected_entity_names.add(e["name"])
+            item_copy = dict(e)
+            item_copy.pop("count", None)
+            prominent_entities.append(item_copy)
+
+        # 3. Stratified Claims and Relationships across all chunks (not just first 2 chunks)
+        stratified_claims: List[Dict[str, Any]] = []
+        stratified_relationships: List[Dict[str, Any]] = []
+        max_per_chunk = max(1, 20 // len(all_extractions))
+
+        for c_idx in range(len(all_extractions)):
+            stratified_claims.extend(chunk_claims.get(c_idx, [])[:max_per_chunk])
+            stratified_relationships.extend(chunk_relationships.get(c_idx, [])[:max_per_chunk])
 
         compact_extractions = {
-            "document_section_summaries": chunk_summaries[:15],
-            "prominent_entities": top_entities,
-            "prominent_concepts": top_concepts,
-            "key_claims": all_claims[:15],
-            "key_relationships": all_relationships[:15],
-            "caveats": all_caveats[:8],
+            "document_section_summaries": chunk_summaries[:20],
+            "prominent_concepts": prominent_concepts,
+            "prominent_entities": prominent_entities,
+            "key_claims": stratified_claims[:20],
+            "key_relationships": stratified_relationships[:20],
+            "caveats": all_caveats[:10],
         }
     else:
         compact_extractions = all_extractions
@@ -648,12 +732,16 @@ async def run_ingest(
         synth_files = [item for item in synth_files if isinstance(item, dict) and item.get("path") and item.get("content")]
         logger.info("Synthesizer proposed %d page operation(s).", len(synth_files))
 
+        rejected_stems: Set[str] = set()
+        rejected_titles: Set[str] = set()
+
         for item in synth_files:
             rel_path = item.get("path", "")
             target_path = _validate_and_resolve_path(wiki_dir, rel_path)
             old_c = target_path.read_text(encoding="utf-8") if target_path.exists() else None
             new_content = item.get("content", "")
-            
+            stem = Path(rel_path).stem
+
             # Check title collision
             try:
                 fm_new, _ = parse_frontmatter(new_content)
@@ -662,32 +750,63 @@ async def run_ingest(
                     existing_path = title_to_path[new_title]
                     if existing_path != rel_path:
                         logger.warning(f"Title '{new_title}' already exists at {existing_path}. Rejecting create at {rel_path}.")
+                        rejected_stems.add(stem)
+                        rejected_titles.add(new_title)
                         continue
             except Exception:
                 pass
-            
+
             # Validate page completeness
             if len(new_content.strip()) < 100:
                 logger.warning(f"Rejecting truncated page ({len(new_content.strip())} chars): {rel_path}")
+                rejected_stems.add(stem)
+                try:
+                    fm_tmp, _ = parse_frontmatter(new_content)
+                    if fm_tmp.get("title"):
+                        rejected_titles.add(str(fm_tmp["title"]).lower().strip())
+                except Exception:
+                    pass
                 continue
+
             try:
                 fm_valid, _ = parse_frontmatter(new_content)
                 if not fm_valid.get("title") or not fm_valid.get("type"):
                     logger.warning(f"Rejecting page with missing frontmatter title/type: {rel_path}")
+                    rejected_stems.add(stem)
+                    if fm_valid.get("title"):
+                        rejected_titles.add(str(fm_valid["title"]).lower().strip())
                     continue
             except Exception:
                 logger.warning(f"Rejecting unparseable page: {rel_path}")
+                rejected_stems.add(stem)
                 continue
 
-            # F-03: Numeric claim gate
+            # F-03: Numeric claim gate (with false-positive protection for math, dates, acronyms, and lists)
             try:
                 fm, body = parse_frontmatter(new_content)
                 body_to_check = body
             except Exception:
                 body_to_check = new_content
                 fm = {}
-                
-            numbers_in_new = re.findall(r'\b\d+(?:[\.,]\d+)?\b', body_to_check)
+
+            # Sanitize structural formatting and acronyms to prevent false-positive hallucination alerts:
+            # 1. Numbered lists: '1. ', '2. '
+            # 2. Markdown headers: '## 1. Introduction'
+            # 3. Footnotes: '[^1]'
+            # 4. Dates: '2026-10-17'
+            # 5. Protocol acronyms and alphanumeric tokens: 'IPv6', '2PL', 'OAuth2', 'H2', 'W3C', 'SHA256'
+            # 6. Scientific notation and math exponents: '3.4 x 10^38', '2^128'
+            # 7. Common stylistic single digits (0-9)
+            sanitized = re.sub(r'(?m)^\s*\d+\.\s+', ' ', body_to_check)
+            sanitized = re.sub(r'(?m)^#+\s*.*$', ' ', sanitized)
+            sanitized = re.sub(r'\[\^\d+\]', ' ', sanitized)
+            sanitized = re.sub(r'\b\d{4}-\d{2}-\d{2}\b', ' ', sanitized)
+            sanitized = re.sub(r'\b[A-Za-z]+\d+[A-Za-z0-9]*\b|\b\d+[A-Za-z]+[A-Za-z0-9]*\b', ' ', sanitized)
+            sanitized = re.sub(r'\b\d+(?:\.\d+)?\s*(?:[x*×]|\b(?:times)\b)\s*10\^\d+\b', ' ', sanitized)
+            sanitized = re.sub(r'\b(?:10|2)\^\d+\b', ' ', sanitized)
+            sanitized = re.sub(r'(?<![\d.,])\d(?![\d.,])', ' ', sanitized)
+
+            numbers_in_new = re.findall(r'\b\d+(?:[\.,]\d+)?\b', sanitized)
             has_fabrication = False
             for num in numbers_in_new:
                 clean_num = num.replace(",", "")
@@ -697,7 +816,7 @@ async def run_ingest(
                     logger.warning(f"Unverified number detected: {num} in {rel_path}. Downgrading confidence to low.")
                     has_fabrication = True
                     break
-                    
+
             if has_fabrication:
                 try:
                     fm, body = parse_frontmatter(new_content)
@@ -783,6 +902,48 @@ async def run_ingest(
                     )
             except Exception:
                 pass
+
+    # 3.5. Link-integrity resolution: Scrub dead references and unbacked peripheral wikilinks
+    valid_existing_stems = {md.stem for md in (wiki_dir / "wiki").rglob("*.md")}
+    valid_existing_titles = set(title_to_path.keys())
+    proposed_stems = {Path(c.path).stem for c in proposed_changes}
+    proposed_titles = set()
+    for c in proposed_changes:
+        try:
+            fm_p, _ = parse_frontmatter(c.new_content)
+            if fm_p.get("title"):
+                proposed_titles.add(str(fm_p["title"]).lower().strip())
+        except Exception:
+            pass
+
+    for change in proposed_changes:
+        def _clean_wikilink(match):
+            inner = match.group(1).strip()
+            if "|" in inner:
+                target_part, display_part = inner.split("|", 1)
+            else:
+                target_part, display_part = inner, inner
+
+            clean_target = target_part.split("#")[0].strip()
+            target_slug = slugify(clean_target)
+            target_lower = clean_target.lower()
+
+            if target_slug in rejected_stems or target_lower in rejected_titles:
+                return display_part
+
+            if (
+                target_slug in valid_existing_stems
+                or target_slug in proposed_stems
+                or clean_target in valid_existing_stems
+                or clean_target in proposed_stems
+                or target_lower in valid_existing_titles
+                or target_lower in proposed_titles
+            ):
+                return match.group(0)
+
+            return display_part
+
+        change.new_content = re.sub(r"\[\[([^\]]+)\]\]", _clean_wikilink, change.new_content)
 
     # 4. Human-in-the-loop review
     approved_changes = review_changes(proposed_changes, auto_approve=auto_approve)
