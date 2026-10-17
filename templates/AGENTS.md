@@ -48,6 +48,8 @@ related:
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 confidence: high | medium | low | contested
+shelf_life: permanent | stable | ephemeral
+status: active | deprecated
 source_count: N
 ---
 ```

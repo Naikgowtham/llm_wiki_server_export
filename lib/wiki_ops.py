@@ -109,6 +109,37 @@ def _validate_and_resolve_path(wiki_dir: Path, rel_path: str) -> Path:
     return full_path
 
 
+def get_compact_typed_index(wiki_dir: Path, max_entries: int = 100) -> str:
+    """Generate or retrieve a compact 1-line-per-entry typed index (<150 chars/line)
+    to prevent context truncation in LLM prompts.
+    """
+    wiki_folder = wiki_dir / "wiki"
+    if not wiki_folder.is_dir():
+        return ""
+
+    typed_file = wiki_folder / ".llm-wiki" / "typed_index.json"
+    if typed_file.exists():
+        try:
+            items = json.loads(typed_file.read_text(encoding="utf-8"))
+            lines = []
+            for item in items[:max_entries]:
+                summary_part = f" — {item['summary']}" if item.get("summary") else ""
+                lines.append(f"- [[{item['title']}]] ({item.get('type', 'page')}){summary_part}")
+            return "\n".join(lines)
+        except Exception:
+            pass
+
+    index_file = wiki_folder / "index.md"
+    if index_file.exists():
+        content = index_file.read_text(encoding="utf-8")
+        if len(content) < 8000:
+            return content
+        lines = [line.strip() for line in content.splitlines() if line.strip().startswith("- [[")]
+        return "\n".join(lines[:max_entries])
+
+    return ""
+
+
 def update_wiki_index(wiki_dir: Path, new_pages: List[str] = None):
     """Scan the wiki directory and rebuild or synchronize wiki/index.md."""
     index_file = wiki_dir / "wiki" / "index.md"
@@ -140,6 +171,7 @@ def update_wiki_index(wiki_dir: Path, new_pages: List[str] = None):
 
     total_pages = 0
     sources_count = 0
+    typed_entries: List[Dict[str, Any]] = []
 
     sections_text = []
     for cat_key, (cat_label, cat_path) in categories.items():
@@ -155,12 +187,34 @@ def update_wiki_index(wiki_dir: Path, new_pages: List[str] = None):
         else:
             for f in files:
                 try:
-                    fm, _ = parse_frontmatter(f.read_text(encoding="utf-8"))
+                    fm, body = parse_frontmatter(f.read_text(encoding="utf-8"))
                     title = fm.get("title", f.stem.replace("-", " ").title())
+                    p_type = fm.get("type", cat_key[:-1] if cat_key.endswith("s") else cat_key)
+                    desc = fm.get("summary", "")
+                    if not desc:
+                        for line in body.splitlines():
+                            line_clean = line.strip()
+                            if line_clean and not line_clean.startswith("#") and not line_clean.startswith(">") and not line_clean.startswith("---"):
+                                desc = line_clean
+                                break
+                    desc = desc.replace("\n", " ").strip()
+                    if len(desc) > 65:
+                        desc = desc[:65].rsplit(" ", 1)[0] + "..."
+                    desc_part = f" — {desc}" if desc else ""
                     src_count = fm.get("source_count", 0)
-                    source_str = "source" if src_count == 1 else "sources"
-                    extra = f" ({src_count} {source_str})" if src_count else ""
-                    sections_text.append(f"- [[{title}]] — {fm.get('type', '')}{extra}")
+                    extra = f" ({src_count} src)" if src_count else ""
+                    line_str = f"- [[{title}]] ({p_type}{extra}){desc_part}"
+                    if len(line_str) > 140:
+                        line_str = line_str[:137] + "..."
+                    sections_text.append(line_str)
+                    typed_entries.append({
+                        "title": title,
+                        "slug": f.stem,
+                        "category": cat_key,
+                        "type": p_type,
+                        "summary": desc,
+                        "path": str(f.relative_to(wiki_dir)),
+                    })
                 except Exception:
                     sections_text.append(f"- [[{f.stem}]]")
             sections_text.append("")
@@ -169,6 +223,14 @@ def update_wiki_index(wiki_dir: Path, new_pages: List[str] = None):
     lines.extend(sections_text)
 
     index_file.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+    # Persist structured typed index for instant sub-token agent reads
+    try:
+        dot_wiki = wiki_dir / "wiki" / ".llm-wiki"
+        dot_wiki.mkdir(parents=True, exist_ok=True)
+        (dot_wiki / "typed_index.json").write_text(json.dumps(typed_entries, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.debug("Failed saving typed_index.json: %s", e)
     
     # V5: Automatically generate category Maps of Content (MOCs)
     try:
@@ -680,10 +742,25 @@ async def run_ingest(
     else:
         compact_extractions = all_extractions
 
+    # Two-Stage Architecture: Persist Stage 1 extractions to disk
+    try:
+        extractions_dir = wiki_dir / "wiki" / ".llm-wiki" / "extractions"
+        extractions_dir.mkdir(parents=True, exist_ok=True)
+        extraction_record = {
+            "source_filename": source_filename,
+            "source_slug": source_slug,
+            "date": today,
+            "chunk_count": len(all_extractions),
+            "extractions": all_extractions,
+            "compact_extractions": compact_extractions,
+        }
+        (extractions_dir / f"{source_slug}.json").write_text(json.dumps(extraction_record, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Could not persist Stage 1 extractions for %s: %s", source_slug, e)
+
     # 2. Synthesis (new pages)
     synth_template = get_template("ingest_synthesize.md")
-    index_path = wiki_dir / "wiki" / "index.md"
-    existing_index = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
+    existing_index = get_compact_typed_index(wiki_dir)
 
     page_templates = ""
     template_dir = wiki_dir / "page-templates"
@@ -864,22 +941,48 @@ async def run_ingest(
         crossref_template = get_template("ingest_crossref.md")
         existing_pages = []
         for md in (wiki_dir / "wiki").rglob("*.md"):
-            if md.name in ("index.md", "log.md", f"{source_slug}.md") or md.name.endswith("_MOC.md"):
+            if md.name in ("index.md", "log.md", f"{source_slug}.md") or md.name.endswith("_MOC.md") or ".llm-wiki" in md.parts or "sources" in md.parts:
                 continue
             try:
                 rel = str(md.relative_to(wiki_dir))
-                existing_pages.append({"path": rel, "content": md.read_text(encoding="utf-8")[:1500]})
+                existing_pages.append({
+                    "path": rel,
+                    "content": md.read_text(encoding="utf-8")[:1000],
+                    "stem": md.stem.lower(),
+                })
             except Exception:
                 pass
 
         if existing_pages:
+            # Sort candidate pages by topic relevance rather than arbitrary disk order
+            synth_keywords = set()
+            for sf in synth_files:
+                if isinstance(sf, dict):
+                    synth_keywords.add(Path(sf.get("path", "")).stem.lower())
+                    for w in sf.get("content", "").lower().split()[:60]:
+                        if len(w) > 3:
+                            synth_keywords.add(w)
+
+            def _candidate_score(cand):
+                score = 0
+                stem = cand["stem"]
+                if stem in synth_keywords:
+                    score += 10
+                for part in stem.split("-"):
+                    if part in synth_keywords:
+                        score += 3
+                return score
+
+            sorted_candidates = sorted(existing_pages, key=_candidate_score, reverse=True)
+            top_candidates = sorted_candidates[:8]
+
             cross_prompt = crossref_template.render(
                 domain_name=config.domain_name,
                 source_filename=source_filename,
                 source_slug=source_slug,
                 date=today,
                 extractions_summary=json.dumps(all_extractions[:3], indent=2),
-                candidate_pages=existing_pages[:8],
+                candidate_pages=top_candidates,
             )
             emit_progress(f"Ingesting {source_filename}: Cross-referencing pages...", 75)
             cross_resp = await provider.acall([{"role": "user", "content": cross_prompt}], operation="ingest_crossref")
@@ -952,6 +1055,10 @@ async def run_ingest(
     applied: List[FileChange] = []
     for change in approved_changes:
         full_path = wiki_dir / change.path
+        # Immutability Protection for Source Documents:
+        if change.operation == "update" and "sources/" in change.path and full_path.exists():
+            logger.info("Preserving immutable source record: %s", change.path)
+            continue
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(change.new_content, encoding="utf-8")
         applied.append(change)
@@ -977,6 +1084,149 @@ async def run_ingest(
     else:
         logger.info(f"No changes applied for {source_filename}. Leaving raw cache untouched.")
         emit_progress(f"Ingestion finished without applying changes for {source_filename}", 100)
+
+    return applied
+
+
+async def recompile_source(
+    wiki_dir: Path,
+    source_slug: str,
+    provider: Optional[LLMProvider] = None,
+    auto_approve: bool = False,
+) -> List[FileChange]:
+    """Recompile wiki pages from stored Stage 1 extractions without re-reading raw source files."""
+    if not provider:
+        provider = LLMProvider()
+
+    config = load_wiki_config(wiki_dir)
+    today = today_str()
+
+    extraction_file = wiki_dir / "wiki" / ".llm-wiki" / "extractions" / f"{source_slug}.json"
+    if not extraction_file.exists():
+        raise FileNotFoundError(
+            f"No Stage 1 extractions found for '{source_slug}' at {extraction_file}. "
+            "Please run `wiki ingest` first to perform raw extraction."
+        )
+
+    data = json.loads(extraction_file.read_text(encoding="utf-8"))
+    source_filename = data.get("source_filename", f"{source_slug}.md")
+    compact_extractions = data.get("compact_extractions", data.get("extractions", []))
+
+    synth_template = get_template("ingest_synthesize.md")
+    existing_index = get_compact_typed_index(wiki_dir)
+
+    page_templates = ""
+    template_dir = wiki_dir / "page-templates"
+    if template_dir.exists():
+        for tpl in template_dir.glob("*.md"):
+            page_templates += f"\n--- {tpl.name} ---\n{tpl.read_text(encoding='utf-8')}\n"
+
+    synth_prompt = synth_template.render(
+        domain_name=config.domain_name,
+        source_filename=source_filename,
+        source_slug=source_slug,
+        date=today,
+        combined_extractions=json.dumps(compact_extractions, indent=2),
+        existing_index=existing_index,
+        page_templates=page_templates,
+        max_page_words=config.ingest_settings.get("max_page_words", 800),
+    )
+    emit_progress(f"Recompiling {source_slug}: Synthesizing pages...", 50)
+    synth_resp = await provider.acall([{"role": "user", "content": synth_prompt}], operation="ingest_synth")
+
+    title_to_path = {}
+    for md in (wiki_dir / "wiki").rglob("*.md"):
+        try:
+            fm, _ = parse_frontmatter(md.read_text(encoding="utf-8"))
+            if "title" in fm:
+                title_to_path[fm["title"].lower().strip()] = str(md.relative_to(wiki_dir))
+        except Exception:
+            pass
+
+    synth_files = parse_json_relaxed(synth_resp)
+    if isinstance(synth_files, dict):
+        for key in ("files", "pages", "operations", "changes", "result", "documents"):
+            if key in synth_files and isinstance(synth_files[key], list):
+                synth_files = synth_files[key]
+    if not isinstance(synth_files, list):
+        synth_files = []
+
+    proposed_changes: List[FileChange] = []
+    for item in synth_files:
+        if not isinstance(item, dict):
+            continue
+        rel_path = item.get("path", "")
+        if not rel_path:
+            continue
+        op = item.get("operation", "create")
+        content = item.get("content", "")
+        target_path = _validate_and_resolve_path(wiki_dir, rel_path)
+        old_c = target_path.read_text(encoding="utf-8") if target_path.exists() else None
+        proposed_changes.append(
+            FileChange(
+                path=rel_path,
+                operation=op,
+                new_content=content,
+                old_content=old_c,
+                reason=item.get("reason", f"Recompiled from stage 1 extractions for {source_slug}"),
+            )
+        )
+
+    # Link integrity scrub
+    valid_existing_stems = {md.stem for md in (wiki_dir / "wiki").rglob("*.md")}
+    valid_existing_titles = set(title_to_path.keys())
+    proposed_stems = {Path(c.path).stem for c in proposed_changes}
+    proposed_titles = set()
+    for c in proposed_changes:
+        try:
+            fm_p, _ = parse_frontmatter(c.new_content)
+            if "title" in fm_p:
+                proposed_titles.add(str(fm_p["title"]).lower().strip())
+        except Exception:
+            pass
+
+    for change in proposed_changes:
+        def _clean_wikilink(match):
+            raw = match.group(1).strip()
+            pipe_parts = raw.split("|", 1)
+            target = pipe_parts[0].strip()
+            display_part = pipe_parts[1].strip() if len(pipe_parts) > 1 else target
+            clean_target = target.split("#")[0].strip()
+            target_slug = slugify(clean_target)
+            target_lower = clean_target.lower()
+            if (
+                target_slug in valid_existing_stems
+                or target_slug in proposed_stems
+                or clean_target in valid_existing_stems
+                or clean_target in proposed_stems
+                or target_lower in valid_existing_titles
+                or target_lower in proposed_titles
+            ):
+                return match.group(0)
+            return display_part
+
+        change.new_content = re.sub(r"\[\[([^\]]+)\]\]", _clean_wikilink, change.new_content)
+
+    approved_changes = review_changes(proposed_changes, auto_approve=auto_approve)
+    applied: List[FileChange] = []
+    for change in approved_changes:
+        full_path = wiki_dir / change.path
+        if change.operation == "update" and "sources/" in change.path and full_path.exists():
+            continue
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(change.new_content, encoding="utf-8")
+        applied.append(change)
+
+    if applied:
+        update_wiki_index(wiki_dir)
+        append_to_log(
+            wiki_dir,
+            operation="recompile",
+            title=source_slug,
+            details=[f"Recompiled from stage 1 extractions: {len(applied)} file(s) updated."],
+        )
+        if config.ingest_settings.get("auto_commit", True):
+            commit_if_git(wiki_dir, f"recompile: {source_slug}")
 
     return applied
 
@@ -1287,14 +1537,33 @@ async def run_lint(
                         "description": "Missing [source: ...] citation or frontmatter sources",
                     })
 
-            # Freshness / staleness check
+            # Freshness / staleness check with shelf-life awareness
             mtime = md.stat().st_mtime
-            if mtime < cutoff_ts:
-                mechanical_issues.append({
-                    "category": "freshness",
-                    "file_path": rel_str,
-                    "description": f"Page older than {stale_days} days without update",
-                })
+            shelf_life = str(fm.get("shelf_life", "")).lower().strip()
+            if not shelf_life:
+                parent_name = md.parent.name.lower()
+                if parent_name in ("rules", "preferences", "concepts"):
+                    shelf_life = "permanent"
+                elif parent_name in ("projects", "queries"):
+                    shelf_life = "ephemeral"
+                else:
+                    shelf_life = "stable"
+
+            if shelf_life == "ephemeral":
+                shelf_days = 7
+            elif shelf_life == "stable":
+                shelf_days = stale_days if stale_days > 0 else 90
+            else:  # permanent
+                shelf_days = None
+
+            if shelf_days is not None:
+                shelf_cutoff = time.time() - (shelf_days * 86400)
+                if mtime < shelf_cutoff:
+                    mechanical_issues.append({
+                        "category": "freshness",
+                        "file_path": rel_str,
+                        "description": f"Page ({shelf_life}) older than {shelf_days} days without update",
+                    })
         except Exception:
             pass
 

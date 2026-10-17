@@ -10,13 +10,15 @@ Chunk {{ chunk_index }} of {{ chunk_total }}
 Header Hierarchy: {{ header_path }}
 
 ## Extraction Directives
-To eliminate context loss and prevent hallucinations:
+To eliminate context loss, avoid superficial summaries, and prevent hallucinations:
 1. Extract ONLY information explicitly present in this text chunk. Do not assume or extrapolate.
 2. Extract specific numbers, metrics, dates, and direct quotes.
 3. For every claim, note the exact section/header where it appears.
 4. If a statement is qualified (e.g. "preliminary", "under specific conditions"), preserve the qualification.
+5. AVOID THE "TABLE-OF-CONTENTS TRAP": Do NOT just extract section headings, table of contents, or superficial 1-sentence overviews. Dig deep into the substantive technical content: concrete definitions, algorithms, state machines, protocol flags, proof steps, benchmark figures, and exact quantitative results.
 
 <Do NOT>
+- Do NOT fall into the TOC trap: superficial summaries of headings without technical depth are strictly rejected.
 - Do NOT invent or hallucinate facts that are not explicitly stated in the source chunk.
 - Do NOT assert facts without a section reference (citation).
 - Do NOT mix knowledge from your pre-training data; rely entirely on the provided chunk.

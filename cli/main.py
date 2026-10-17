@@ -87,14 +87,18 @@ def status_cmd(wiki_path: str):
 # Register subcommands
 from cli.export_cmd import export_cmd
 from cli.hooks_cmd import install_hooks_cmd
+from cli.ingest_cmd import recompile_cmd
 from cli.mcp_cmd import mcp_cmd
 from cli.mcp_router_cmd import mcp_router_cmd
 from cli.moc_cmd import moc_cmd
 from cli.monitor_cmd import monitor_cmd
+from cli.search_cmd import search_cmd
 from cli.ui_server import dashboard_cmd
 
 cli.add_command(init_cmd)
 cli.add_command(ingest_cmd)
+cli.add_command(recompile_cmd)
+cli.add_command(search_cmd)
 cli.add_command(query_cmd)
 cli.add_command(lint_cmd)
 cli.add_command(status_cmd)

@@ -100,3 +100,46 @@ def ingest_cmd(source_path: Optional[str], wiki_path: str, ingest_all: bool, yes
             sys.exit(1)
         except Exception as e:
             console.print(f"[red]Failed processing {src.name}:[/red] {e}")
+            try:
+                import git
+                repo = git.Repo(wiki_dir)
+                if repo.is_dirty():
+                    console.print("[yellow]Rolling back uncommitted changes to keep vault clean...[/yellow]")
+                    repo.git.reset("--hard", "HEAD")
+                    repo.git.clean("-fd")
+            except Exception:
+                pass
+
+
+@click.command("recompile")
+@click.argument("source_slug", required=True, type=str)
+@click.option("--wiki-path", "-w", default=".", type=str, help="Path or name of wiki vault.")
+@click.option("--yes", "-y", is_flag=True, help="Auto-approve all proposed file operations (non-interactive).")
+def recompile_cmd(source_slug: str, wiki_path: str, yes: bool):
+    """Recompile wiki pages directly from stored Stage 1 extractions without re-reading raw files."""
+    from lib.utils import resolve_vault_path
+    resolved = resolve_vault_path(wiki_path)
+    wiki_dir = resolved if resolved else Path(wiki_path).resolve()
+
+    if not (wiki_dir / "wiki").is_dir():
+        console.print(f"[red]Error:[/red] {wiki_dir} is not a valid LLM Wiki instance.")
+        raise click.Abort()
+
+    from lib.wiki_ops import recompile_source
+    console.print(f"\n[cyan]Recompiling pages for[/cyan] [bold]{source_slug}[/bold] in [bold]{wiki_dir.name}[/bold]...")
+
+    try:
+        provider = LLMProvider()
+        applied = asyncio.run(recompile_source(
+            wiki_dir=wiki_dir,
+            source_slug=source_slug,
+            provider=provider,
+            auto_approve=yes,
+        ))
+        if applied:
+            console.print(f"[green]✓ Successfully recompiled {source_slug}[/green] ({len(applied)} file changes committed)\n")
+        else:
+            console.print(f"[yellow]No changes were applied during recompilation of {source_slug}[/yellow]\n")
+    except Exception as e:
+        console.print(f"[red]Recompilation failed:[/red] {e}")
+        raise click.Abort()
