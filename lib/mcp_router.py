@@ -11,7 +11,15 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from lib.config import WikiConfig, load_wiki_config
 from lib.providers import LLMProvider, RateLimitCooldownTracker
-from lib.utils import build_link_graph, extract_wikilinks, parse_frontmatter, render_frontmatter, slugify, today_str
+from lib.utils import (
+    SUPPORTED_SOURCE_EXTENSIONS,
+    build_link_graph,
+    extract_wikilinks,
+    parse_frontmatter,
+    render_frontmatter,
+    slugify,
+    today_str,
+)
 from lib.vector_store import WikiVectorStore
 
 logger = logging.getLogger(__name__)
@@ -172,7 +180,7 @@ class WikiRouterManager:
         raw_sources = 0
         if raw_folder.is_dir():
             for f in raw_folder.rglob("*"):
-                if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf", ".html", ".htm"):
+                if f.is_file() and f.suffix.lower() in SUPPORTED_SOURCE_EXTENSIONS:
                     raw_sources += 1
 
         total_pages = len(list(wiki_folder.rglob("*.md")))

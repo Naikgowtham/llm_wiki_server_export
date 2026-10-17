@@ -12,11 +12,12 @@ from rich.console import Console
 from rich.panel import Panel
 
 from lib.providers import LLMProvider, LLMProviderError
+from lib.utils import SUPPORTED_SOURCE_EXTENSIONS
 from lib.wiki_ops import run_ingest, run_lint
 
 console = Console()
 
-SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf", ".html", ".htm"}
+SUPPORTED_EXTENSIONS = SUPPORTED_SOURCE_EXTENSIONS
 
 
 def get_raw_files_state(raw_dir: Path) -> Dict[str, tuple[float, int]]:
@@ -155,7 +156,7 @@ Mode:          [green]{"Auto-approve & commit" if yes else "Interactive review"}
 Auto-Lint:     [cyan]{"Enabled" if lint else "Disabled"}[/cyan]{" (auto-fix)" if lint_fix else ""}
 Interval:      {interval}s{" (Periodic lint: " + str(lint_interval) + "s)" if lint_interval > 0 else ""}
 
-[dim]Drop any document (.md, .txt, .pdf, .html) into raw/ in any watched vault to compile & lint automatically.[/dim]
+[dim]Drop any document (.md, .txt, .pdf, .docx, .pptx, .csv, .xlsx, images, .html) into raw/ in any watched vault to compile & lint automatically.[/dim]
 [dim]Press Ctrl+C to stop watching.[/dim]
 """
     console.print(Panel(banner.strip(), border_style="cyan"))

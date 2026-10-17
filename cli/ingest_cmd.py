@@ -42,8 +42,9 @@ def ingest_cmd(source_path: Optional[str], wiki_path: str, ingest_all: bool, yes
         from lib.utils import slugify
         ingested = get_already_ingested(wiki_dir)
         
+        from lib.utils import SUPPORTED_SOURCE_EXTENSIONS
         for f in sorted(raw_dir.glob("*")):
-            if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in (".md", ".txt", ".pdf", ".html", ".htm"):
+            if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in SUPPORTED_SOURCE_EXTENSIONS:
                 if f.stem not in ingested and f.name not in ingested and slugify(f.stem) not in ingested:
                     sources_to_process.append(f)
         if not sources_to_process:

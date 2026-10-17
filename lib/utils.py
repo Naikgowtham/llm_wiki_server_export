@@ -126,7 +126,11 @@ def build_link_graph(wiki_dir: Path) -> Dict[str, Set[str]]:
     return graph
 
 
-SUPPORTED_SOURCE_EXTENSIONS: Set[str] = {".md", ".txt", ".pdf", ".html", ".htm"}
+SUPPORTED_SOURCE_EXTENSIONS: Set[str] = {
+    ".md", ".txt", ".pdf", ".html", ".htm",
+    ".docx", ".pptx", ".csv", ".tsv", ".xlsx",
+    ".png", ".jpg", ".jpeg", ".webp",
+}
 
 
 def convert_html_to_markdown(html_content: str) -> str:
@@ -164,7 +168,7 @@ def convert_html_to_markdown(html_content: str) -> str:
 
 
 def read_source_file(file_path: Path) -> str:
-    """Read a raw source file (.md, .txt, .pdf, .html), converting PDF/HTML to Markdown if necessary."""
+    """Read a raw source file (.md, .txt, .pdf, .html, .docx, .pptx, .csv, .xlsx, images), converting to Markdown."""
     file_path = Path(file_path)
     suffix = file_path.suffix.lower()
     if suffix == ".pdf":
@@ -178,6 +182,21 @@ def read_source_file(file_path: Path) -> str:
     elif suffix in {".html", ".htm"}:
         content = file_path.read_text(encoding="utf-8", errors="replace")
         return convert_html_to_markdown(content)
+    elif suffix == ".docx":
+        from lib.doc_processor import convert_docx_to_markdown
+        return convert_docx_to_markdown(file_path)
+    elif suffix == ".pptx":
+        from lib.doc_processor import convert_pptx_to_markdown
+        return convert_pptx_to_markdown(file_path)
+    elif suffix in {".csv", ".tsv"}:
+        from lib.doc_processor import convert_csv_to_markdown
+        return convert_csv_to_markdown(file_path)
+    elif suffix == ".xlsx":
+        from lib.doc_processor import convert_xlsx_to_markdown
+        return convert_xlsx_to_markdown(file_path)
+    elif suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        title = file_path.stem.replace("-", " ").replace("_", " ").title()
+        return f"# Image Asset: {title}\n\n![{title}]({file_path.name})\n"
     return file_path.read_text(encoding="utf-8")
 
 

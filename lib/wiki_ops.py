@@ -407,7 +407,8 @@ async def run_ingest(
     source_slug = slugify(source_file.stem)
     today = today_str()
 
-    if source_file.suffix.lower() == ".pdf":
+    suffix = source_file.suffix.lower()
+    if suffix == ".pdf":
         from lib.pdf_processor import process_pdf_source
         source_content = await process_pdf_source(
             pdf_path=source_file,
@@ -415,6 +416,26 @@ async def run_ingest(
             provider=provider,
             domain_name=config.domain_name,
         )
+    elif suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        from lib.doc_processor import process_image_source
+        source_content = await process_image_source(
+            image_path=source_file,
+            wiki_dir=wiki_dir,
+            provider=provider,
+            domain_name=config.domain_name,
+        )
+    elif suffix in (".html", ".htm"):
+        from lib.doc_processor import process_html_source
+        source_content = await process_html_source(
+            html_path=source_file,
+            wiki_dir=wiki_dir,
+            provider=provider,
+            domain_name=config.domain_name,
+        )
+    elif suffix == ".docx":
+        from lib.doc_processor import convert_docx_to_markdown
+        assets_dir = wiki_dir / "wiki" / "assets" / source_slug
+        source_content = convert_docx_to_markdown(source_file, assets_dir=assets_dir, doc_slug=source_slug)
     else:
         source_content = read_source_file(source_file)
 
