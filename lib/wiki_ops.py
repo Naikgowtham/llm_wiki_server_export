@@ -476,9 +476,10 @@ async def run_ingest(
             async with semaphore:
                 resp = await provider.acall([{"role": "user", "content": prompt_str}], operation="ingest_extract")
                 await asyncio.sleep(1.5)
-                cleaned = _clean_json_response(resp)
                 try:
-                    parsed = json.loads(cleaned)
+                    parsed = parse_json_relaxed(resp)
+                    if not isinstance(parsed, (dict, list)):
+                        parsed = {"summary": chunk.content[:300], "raw": chunk.content[:500]}
                 except Exception as e:
                     logger.warning("Failed to parse chunk %d JSON: %s. Using raw excerpt.", chunk.index, e)
                     parsed = {"summary": chunk.content[:300], "raw": chunk.content[:500]}
@@ -613,10 +614,18 @@ async def run_ingest(
             
     try:
         synth_files = parse_json_relaxed(synth_resp)
-        if isinstance(synth_files, list):
-            synth_files = [item for item in synth_files if isinstance(item, dict) and item.get("path") and item.get("content")]
-        else:
+        if isinstance(synth_files, dict):
+            for key in ("files", "pages", "operations", "changes", "result", "documents"):
+                if key in synth_files and isinstance(synth_files[key], list):
+                    synth_files = synth_files[key]
+                    break
+            else:
+                synth_files = []
+        elif not isinstance(synth_files, list):
             synth_files = []
+
+        synth_files = [item for item in synth_files if isinstance(item, dict) and item.get("path") and item.get("content")]
+        logger.info("Synthesizer proposed %d page operation(s).", len(synth_files))
 
         for item in synth_files:
             rel_path = item.get("path", "")
@@ -734,9 +743,10 @@ async def run_ingest(
             )
             emit_progress(f"Ingesting {source_filename}: Cross-referencing pages...", 75)
             cross_resp = await provider.acall([{"role": "user", "content": cross_prompt}], operation="ingest_crossref")
-            cross_cleaned = _clean_json_response(cross_resp)
             try:
-                cross_files = json.loads(cross_cleaned)
+                cross_files = parse_json_relaxed(cross_resp)
+                if not isinstance(cross_files, list):
+                    cross_files = []
                 for item in cross_files:
                     rel_path = item.get("path", "")
                     target_path = _validate_and_resolve_path(wiki_dir, rel_path)

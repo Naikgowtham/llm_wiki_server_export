@@ -163,6 +163,27 @@ class LLMProvider:
 
     _call_counter: int = 0
 
+    @classmethod
+    def _rotate_primary_tier(cls, base_models: List[str]) -> List[str]:
+        """Rotate among models in the primary tier (e.g. multiple API keys for the top model)
+        while preserving fallback ordering for lower-priority models."""
+        if len(base_models) <= 1:
+            return base_models
+        first = base_models[0].split("/", 1)[1] if "/" in base_models[0] else base_models[0]
+        tier_len = 0
+        for m in base_models:
+            m_core = m.split("/", 1)[1] if "/" in m else m
+            if m_core == first:
+                tier_len += 1
+            else:
+                break
+        if tier_len > 1:
+            offset = cls._call_counter % tier_len
+            cls._call_counter += 1
+            primary = base_models[:tier_len]
+            return primary[offset:] + primary[:offset] + base_models[tier_len:]
+        return base_models
+
     def __init__(self, config: Optional[ProvidersConfig] = None):
         self.config = config or load_providers_config()
         self.rate_limits: List[Dict[str, Any]] = []
@@ -229,10 +250,8 @@ class LLMProvider:
     ) -> str:
         """Execute a completion using the fallback chain configured for the given operation."""
         base_models = [override_model] if override_model else self.config.get_fallback_models(operation)
-        if len(base_models) > 1 and not override_model:
-            offset = LLMProvider._call_counter % len(base_models)
-            LLMProvider._call_counter += 1
-            base_models = base_models[offset:] + base_models[:offset]
+        if not override_model:
+            base_models = self._rotate_primary_tier(base_models)
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)  # Circular rotation (max 2 loops)
         if not models:
             raise LLMProviderError(
@@ -499,10 +518,8 @@ class LLMProvider:
         """Execute an asynchronous completion using the fallback chain configured for the given operation."""
         import asyncio
         base_models = [override_model] if override_model else self.config.get_fallback_models(operation)
-        if len(base_models) > 1 and not override_model:
-            offset = LLMProvider._call_counter % len(base_models)
-            LLMProvider._call_counter += 1
-            base_models = base_models[offset:] + base_models[:offset]
+        if not override_model:
+            base_models = self._rotate_primary_tier(base_models)
         models = RateLimitCooldownTracker.filter_available_models(base_models * 2)
         if not models:
             raise LLMProviderError(
